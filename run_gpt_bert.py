@@ -119,7 +119,7 @@ def parse_args():
     parser.add_argument(
         "--max_train_steps",
         type=int,
-        default=10000,
+        default=None,
         help="Total number of training steps to perform. If provided, overrides num_train_epochs.",
     )
     parser.add_argument(
@@ -202,6 +202,13 @@ def parse_args():
     
     args.output_dir += f'/{args.task_name}/{args.model_name_or_path}_{peft_method}_{args.lora_alpha}_{args.lora_dropout}_{args.learning_rate}_{args.seed}'
 
+    os.makedirs(args.output_dir, exist_ok=True)
+
+    args_file_path = os.path.join(args.output_dir, 'args.json')
+    args_dict = vars(args)
+    with open(args_file_path, 'w+') as f:
+      json.dump(args_dict, f, indent=4)
+
     # Sanity checks
     if args.task_name is None and args.train_file is None and args.validation_file is None:
         raise ValueError("Need either a task name or a training/validation file.")
@@ -283,7 +290,12 @@ def main():
     if args.task_name is not None:
         # Downloading and loading a dataset from the hub.
         if args.task_name in ['wnli', 'rte', 'mrpc', 'cola', 'sst2', 'qnli', 'qqp', 'mnli']:
+            cache_dir = "/content/cache/huggingface"
+            os.makedirs(cache_dir, exist_ok=True)
+            os.environ["HF_HOME"] = cache_dir
             raw_datasets = load_dataset("glue", args.task_name)
+            task_output_dir = os.path.join(cache_dir, f"metrics/glue/{args.task_name}/outputs/{args.task_name}/{args.model_name_or_path}")
+            os.makedirs(task_output_dir, exist_ok=True)
         elif args.task_name in ['cb', 'wic', 'boolq']:
             raw_datasets = load_dataset("super_glue", args.task_name)
         elif 'ARC' in args.task_name:
@@ -413,7 +425,7 @@ def main():
         tokenizer.add_eos_token = True
     
     model = BertForSequenceClassification.from_pretrained(
-        args.model_name_or_path, load_in_8bit=True
+        args.model_name_or_path, load_in_8bit=False #True
     )
 
 
@@ -422,7 +434,7 @@ def main():
     if args.lm_head:
         #target_modules.append('lm_head')
         target_modules= ['lm_head']
-    peft_config = LoraConfig(task_type="CAUSAL_LM", inference_mode=False, r=8, lora_alpha=args.lora_alpha, lora_dropout=args.lora_dropout, target_modules=target_modules)
+    peft_config = LoraConfig(task_type="CAUSAL_LM", inference_mode=False, r=8, lora_alpha=args.lora_alpha, lora_dropout=args.lora_dropout, target_modules=target_modules,modules_to_save = ['classifier.bias', 'classifier.weight'])
     model = get_peft_model(model, peft_config)
     model.print_trainable_parameters()
     print(model)
@@ -451,8 +463,31 @@ def main():
             result = tokenizer(texts, padding=padding, max_length=args.max_length, truncation=True)
             map_dict = {"1": 0, "2": 1, "":None}
             result["labels"] = [map_dict[label] for label in examples["answer"]]
-        elif args.task_name == 'cola':
-            result = tokenizer(examples["sentence"], max_length=512, truncation=True, return_overflowing_tokens=False)
+        elif 'cola' in args.task_name:
+            result = tokenizer(examples["sentence"], max_length=args.max_length, truncation=True, return_overflowing_tokens=False)
+            result["labels"] = examples["label"]
+        elif 'mnli' in args.task_name:
+            result = tokenizer(examples["premise"], examples["hypothesis"], truncation=True, padding=padding, max_length=args.max_length)
+        elif 'sst2' in args.task_name:
+            result = tokenizer(examples['sentence'], truncation=True, padding=padding, max_length=args.max_length)
+            result["labels"] = examples["label"]
+        elif 'stsb' in args.task_name:
+            result = tokenizer(examples["sentence1"], examples["sentence2"],max_length = args.max_length,truncation=True,return_overflowing_tokens=False)
+            result["labels"] = examples["label"]
+        elif 'qnli' in args.task_name:
+            result = tokenizer(examples["question"], examples["sentence"],max_length = args.max_length,truncation=True,return_overflowing_tokens=False)
+            result["labels"] = examples["label"]
+        elif 'qqp' in args.task_name:
+            result = tokenizer(examples['question1'], examples['question2'], truncation=True, padding=padding, max_length=args.max_length)
+            result["labels"] = examples["label"]
+        elif 'rte'  in args.task_name:
+            result = tokenizer(examples['sentence1'], examples['sentence2'], truncation=True, padding=padding, max_length=args.max_length)
+            result["labels"] = examples["label"]
+        elif 'wnli' in args.task_name:
+            result = tokenizer(examples['sentence1'], examples['sentence2'], truncation=True, padding=padding, max_length=args.max_length)
+            result["labels"] = examples["label"]
+        elif 'mrpc' in args.task_name:
+            result = tokenizer(examples["sentence1"], examples["sentence2"], truncation=True,padding=padding, max_length=args.max_length)
             result["labels"] = examples["label"]
         return result
 
@@ -507,8 +542,11 @@ def main():
     # Split weights in two groups, one with weight decay and the other not.
     
     # Scheduler and math around the number of training steps.
+    logger.info(f" Max training steps before recalculation = {args.max_train_steps}")
     overrode_max_train_steps = False
     num_update_steps_per_epoch = math.ceil(len(train_dataloader) / args.gradient_accumulation_steps)
+    logger.info(f" num_update_steps_per_epoch initial = {num_update_steps_per_epoch}")
+    logger.info(f" num training epochs initial = {args.num_train_epochs}")
     if args.max_train_steps is None:
         args.max_train_steps = args.num_train_epochs * num_update_steps_per_epoch
         overrode_max_train_steps = True
@@ -581,12 +619,17 @@ def main():
         model, optimizer, train_dataloader, eval_dataloader, lr_scheduler
     )
 
+    logger.info(f" num_update_steps_per_epoch before recalculation = {num_update_steps_per_epoch}")
     # We need to recalculate our total training steps as the size of the training dataloader may have changed
     num_update_steps_per_epoch = math.ceil(len(train_dataloader) / args.gradient_accumulation_steps)
+    logger.info(f" num_update_steps_per_epoch after recalculation = {num_update_steps_per_epoch}")
     if overrode_max_train_steps:
         args.max_train_steps = args.num_train_epochs * num_update_steps_per_epoch
     # Afterwards we recalculate our number of training epochs
+    logger.info(f" num training epochs before recalculation = {args.num_train_epochs}")
     args.num_train_epochs = math.ceil(args.max_train_steps / num_update_steps_per_epoch)
+    logger.info(f" num training epochs after recalculation = {args.num_train_epochs}")
+    logger.info(f" Max training steps after recalculation = {args.max_train_steps}")
 
     # Figure out how many steps we should save the Accelerator states
     checkpointing_steps = args.checkpointing_steps
@@ -772,6 +815,7 @@ def main():
 
             del outputs, loss, y
     
+
 
 if __name__ == "__main__":
     main()
