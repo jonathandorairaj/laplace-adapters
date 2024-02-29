@@ -434,7 +434,7 @@ def main():
     if args.lm_head:
         #target_modules.append('lm_head')
         target_modules= ['lm_head']
-    peft_config = LoraConfig(task_type="CAUSAL_LM", inference_mode=False, r=8, lora_alpha=args.lora_alpha, lora_dropout=args.lora_dropout, target_modules=target_modules,modules_to_save = ['classifier.bias', 'classifier.weight'])
+    peft_config = LoraConfig(task_type="CAUSAL_LM", inference_mode=False, r=args.lora_r, lora_alpha=args.lora_alpha, lora_dropout=args.lora_dropout, target_modules=target_modules,modules_to_save = ['classifier.bias', 'classifier.weight'])
     model = get_peft_model(model, peft_config)
     model.print_trainable_parameters()
     print(model)
@@ -571,29 +571,31 @@ def main():
             self.model = model
 
 
-        def forward(self, **kwargs):
-            kwargs.pop('labels', None)
-            output_dict = self.model(**kwargs)
-            logits = output_dict['logits']
+        #def forward(self, **kwargs):
+            #kwargs.pop('labels', None)
+            #output_dict = self.model(**kwargs)
+            #logits = output_dict['logits']
             #need to make changes for GLUE tasks
             #selected_logits = logits[:, -1, self.id_list]
             #output_dict['logits'] = selected_logits
             #return output_dict
 
             # Convert logits to probabilities using softmax
-            probs = torch.softmax(logits, dim=-1)
+            #probs = torch.softmax(logits, dim=-1)
     
             # Convert probabilities to class predictions
-            predictions = torch.argmax(probs, dim=-1)
+            #predictions = torch.argmax(probs, dim=-1)
     
             # Update the output dictionary to include class predictions
-            output_dict['predictions'] = predictions
+            #output_dict['predictions'] = predictions
 
-            return output_dict
+            #return output_dict
 
     
 
     #model = WrappedModel(model)
+
+    print(model)
 
     no_decay = ["bias", "LayerNorm.weight"]
     optimizer_grouped_parameters = [
@@ -756,8 +758,11 @@ def main():
                         if test_loader_name == 'eval':
                             accelerator.wait_for_everyone()
                             # unwrapped_model = accelerator.unwrap_model(model).model
-                            accelerator.unwrap_model(model).model.save_pretrained(
-                                output_dir, is_main_process=accelerator.is_main_process, save_function=accelerator.save
+                            #accelerator.unwrap_model(model).model.save_pretrained(
+                            #    output_dir, is_main_process=accelerator.is_main_process, save_function=accelerator.save
+                            #)
+                            model.save_pretrained(output_dir,
+                            save_function=accelerator.save  # Ensures compatibility with Accelerate's distributed file handling
                             )
                             if accelerator.is_main_process:
                                 tokenizer.save_pretrained(output_dir)
