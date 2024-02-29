@@ -189,7 +189,13 @@ def parse_args():
     parser.add_argument("--laplace_optim_step", type=int, default=1000)
     parser.add_argument("--testing_set", type=str, default='train_val')
     parser.add_argument("--laplace_predict", type=str, default='mc_corr', help='probit bridge bridge_norm mc_indep mc_corr')
-    parser.add_argument("--lm_head", action="store_true", default=True)
+    parser.add_argument("--lm_head", action="store_true", default=False)
+    parser.add_argument("--cache_dir", type=str,
+        default="/content/cache/huggingface/metrics/glue",
+        help="custom cache directory for GLUE datasets"
+    )
+    parser.add_argument("--max_step", type=int, required=True, help="Maximum step value for the step list based on number of checkpoints saved.")
+
     args = parser.parse_args()
 
     print(args)
@@ -209,6 +215,10 @@ def parse_args():
     args.output_dir += f'/{args.task_name}/{args.model_name_or_path}_{peft_method}_{args.lora_alpha}_{args.lora_dropout}_{args.learning_rate}_{args.seed}'
     args.laplace_output_dir = f'outputs_laplace/{args.task_name}/{args.model_name_or_path}_{peft_method}_{args.lora_alpha}_{args.lora_dropout}_{args.learning_rate}_{args.seed}/'
     
+    # custom cache dir
+    args.cache_dir += f"/{args.task_name}/outputs_laplace/{args.task_name}"
+    os.makedirs(args.cache_dir, exist_ok=True)
+
     os.makedirs(args.output_dir, exist_ok=True)
 
 
@@ -238,6 +248,11 @@ def main(load_step):
 
     laplace_output_dir = args.laplace_output_dir + f'step_{args.load_step}'
     os.makedirs(laplace_output_dir, exist_ok=True)
+
+    subfolder_name = f"{args.model_name_or_path}_lora_{args.lora_alpha}_{args.lora_dropout}_{args.learning_rate}_{args.seed}/step_{args.load_step}"
+    step_dir = os.path.join(args.cache_dir, subfolder_name)
+    os.makedirs(step_dir, exist_ok=True)
+
 
     # Initialize the accelerator. We will let the accelerator handle device placement for us in this example.
     # If we're using tracking, we also need to initialize it here and it will by default pick up all supported trackers
@@ -395,8 +410,8 @@ def main(load_step):
     #
     # In distributed training, the .from_pretrained methods guarantee that only one local process can concurrently
     # download model & vocab.
-    tokenizer = AutoTokenizer.from_pretrained(args.model_name_or_path, use_fast=not args.use_slow_tokenizer, padding_side='left', use_auth_token='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')
-    tokenizer.pad_token = tokenizer.bos_token
+    tokenizer = AutoTokenizer.from_pretrained(args.model_name_or_path, use_fast=not args.use_slow_tokenizer, padding_side='left', use_auth_token='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')
+    #tokenizer.pad_token = tokenizer.eos_token
     if args.task_name in ['boolq']: #,'winogrande_m', 'winogrande_s']:
         tokenizer.add_eos_token = True
     
@@ -672,7 +687,13 @@ def main(load_step):
     output_dicts = []
     f_mu_list = []
     f_var_list = []
+
+
+
     for step, batch in tqdm(enumerate(eval_dataloader)):
+        #subfolder_name = f"{args.model_name_or_path}_lora_{args.lora_alpha}_{args.lora_dropout}_{args.learning_rate}_{args.seed}/step_{step}"
+        #step_dir = os.path.join(base_dir, subfolder_name)
+        #os.makedirs(step_dir, exist_ok=True)
         with torch.no_grad():
             f_mu, f_var = la._glm_predictive_distribution(batch)
             f_mu_list.append(f_mu)
@@ -757,6 +778,6 @@ def main(load_step):
 
 
 if __name__ == "__main__":
-    step_list = [0,*list(range(999, 10999, 1000))]
+    step_list = [0,*list(range(999, 4000 , 1000))]
     for load_step in step_list:
         main(load_step)

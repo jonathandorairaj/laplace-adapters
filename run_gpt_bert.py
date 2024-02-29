@@ -296,6 +296,7 @@ def main():
             raw_datasets = load_dataset("glue", args.task_name)
             task_output_dir = os.path.join(cache_dir, f"metrics/glue/{args.task_name}/outputs/{args.task_name}/{args.model_name_or_path}")
             os.makedirs(task_output_dir, exist_ok=True)
+            print(task_output_dir)
         elif args.task_name in ['cb', 'wic', 'boolq']:
             raw_datasets = load_dataset("super_glue", args.task_name)
         elif 'ARC' in args.task_name:
@@ -420,7 +421,7 @@ def main():
     # In distributed training, the .from_pretrained methods guarantee that only one local process can concurrently
     # download model & vocab.
     tokenizer = AutoTokenizer.from_pretrained(args.model_name_or_path, use_fast=not args.use_slow_tokenizer, padding_side='left', use_auth_token='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')
-    #tokenizer.pad_token = tokenizer.bos_token
+    #tokenizer.pad_token = tokenizer.eos_token
     if args.task_name in ['boolq']:  #,'winogrande_m', 'winogrande_s']:
         tokenizer.add_eos_token = True
     
@@ -434,7 +435,7 @@ def main():
     if args.lm_head:
         #target_modules.append('lm_head')
         target_modules= ['lm_head']
-    peft_config = LoraConfig(task_type="CAUSAL_LM", inference_mode=False, r=args.lora_r, lora_alpha=args.lora_alpha, lora_dropout=args.lora_dropout, target_modules=target_modules,modules_to_save = ['classifier.bias', 'classifier.weight'])
+    peft_config = LoraConfig(task_type="SEQ_CLS", inference_mode=False, r=args.lora_r, lora_alpha=args.lora_alpha, lora_dropout=args.lora_dropout, target_modules=target_modules)
     model = get_peft_model(model, peft_config)
     model.print_trainable_parameters()
     print(model)
