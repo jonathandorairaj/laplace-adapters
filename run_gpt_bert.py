@@ -11,6 +11,7 @@ from pathlib import Path
 import datasets
 import evaluate
 import torch
+import torch.nn.functional as F
 from accelerate import Accelerator
 from accelerate.logging import get_logger
 from accelerate.utils import set_seed
@@ -431,10 +432,10 @@ def main():
 
 
     
-    target_modules=None #['v_proj','q_proj']
+    target_modules= ['query','value','classifier'] #['v_proj','q_proj']
     if args.lm_head:
         #target_modules.append('lm_head')
-        target_modules= ['lm_head']
+        target_modules= ['classifier']
     peft_config = LoraConfig(task_type="SEQ_CLS", inference_mode=False, r=args.lora_r, lora_alpha=args.lora_alpha, lora_dropout=args.lora_dropout, target_modules=target_modules)
     model = get_peft_model(model, peft_config)
     model.print_trainable_parameters()
@@ -729,14 +730,15 @@ def main():
                             logits = outputs.logits.detach()
                             for j in range(logits.size(0)):
                                 probs = logits[j]  #F.softmax(logits[j], -1)
+                                softmax_probs = F.softmax(probs, -1)
                                 label = batch["labels"]
                                 output_dict = {
                                     'index': args.per_device_eval_batch_size * step + j,
                                     'true': label[j].item(),
                                     'pred': logits[j].argmax().item(),
-                                    'conf': probs.max().item(),
+                                    'conf': softmax_probs.max().item(),
                                     'logits': logits[j].cpu().numpy().tolist(),
-                                    'probs': probs.cpu().numpy().tolist(),
+                                    'probs': softmax_probs.cpu().numpy().tolist(),
                                 }
                                 output_dicts.append(output_dict)
 
