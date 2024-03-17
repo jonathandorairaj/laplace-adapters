@@ -118,7 +118,7 @@ def parse_args():
     parser.add_argument(
         "--max_train_steps",
         type=int,
-        default=10000,
+        default=None,
         help="Total number of training steps to perform. If provided, overrides num_train_epochs.",
     )
     parser.add_argument(
@@ -194,7 +194,7 @@ def parse_args():
         default="/content/cache/huggingface/metrics/glue",
         help="custom cache directory for GLUE datasets"
     )
-    parser.add_argument("--max_step", type=int, required=True, help="Maximum step value for the step list based on number of checkpoints saved.")
+    #parser.add_argument("--max_step", type=int, required=True, help="Maximum step value for the step list based on number of checkpoints saved.")
 
     args = parser.parse_args()
 
@@ -216,7 +216,7 @@ def parse_args():
     args.laplace_output_dir = f'outputs_laplace/{args.task_name}/{args.model_name_or_path}_{peft_method}_{args.lora_alpha}_{args.lora_dropout}_{args.learning_rate}_{args.seed}/'
     
     # custom cache dir
-    args.cache_dir += f"/{args.task_name}/outputs_laplace/{args.task_name}"
+    args.cache_dir += f"/{args.task_name}/outputs_laplace/{args.task_name}/{args.model_name_or_path}_{peft_method}_{args.lora_alpha}_{args.lora_dropout}_{args.learning_rate}_{args.seed}/"
     os.makedirs(args.cache_dir, exist_ok=True)
 
     os.makedirs(args.output_dir, exist_ok=True)
@@ -249,7 +249,7 @@ def main(load_step):
     laplace_output_dir = args.laplace_output_dir + f'step_{args.load_step}'
     os.makedirs(laplace_output_dir, exist_ok=True)
 
-    subfolder_name = f"{args.model_name_or_path}_lora_{args.lora_alpha}_{args.lora_dropout}_{args.learning_rate}_{args.seed}/step_{args.load_step}"
+    subfolder_name = f"step_{args.load_step}"
     step_dir = os.path.join(args.cache_dir, subfolder_name)
     os.makedirs(step_dir, exist_ok=True)
 
@@ -541,27 +541,28 @@ def main(load_step):
 
     
     class CustomLMHead_lora(torch.nn.Module):
-        def __init__(self, original_lm_head, id_list):
+        def __init__(self, original_lm_head):
             super().__init__()
-            self.id_list = id_list
+            #self.id_list = id_list
             
             # Trim the lm_head linear weights
-            original_weight = original_lm_head.weight[id_list, :].clone()
-            self.linear = torch.nn.Linear(in_features=original_weight.shape[1], out_features=len(id_list), bias=False).to(accelerator.device)
+            original_weight = original_lm_head.weight.clone()
+
+            self.linear = torch.nn.Linear(in_features=original_weight.shape[1], out_features=original_weight.shape[0], bias=False).to(accelerator.device)
             self.linear.weight.data = original_weight.to(torch.float32)
             self.linear.weight.requires_grad = False
 
-            self.lora_dropout = original_lm_head.lora_dropout['default']
+            self.lora_dropout = original_lm_head.modules_to_save['default'].lora_dropout['default']
 
-            original_lora_A_weight = original_lm_head.lora_A["default"].weight.clone()
+            original_lora_A_weight = original_lm_head.modules_to_save.default.lora_A["default"].weight.clone()
             self.lora_A = torch.nn.Linear(in_features=original_lora_A_weight.shape[1], out_features=original_lora_A_weight.shape[0], bias=False).to(accelerator.device)
             self.lora_A.weight.data = original_lora_A_weight.to(torch.float32)
             # if args.laplace_sub == 'all':
             self.lora_A.weight.requires_grad = True
             
             # Trim the lora_B weights
-            original_lora_B_weight = original_lm_head.lora_B["default"].weight[id_list, :].clone()
-            self.lora_B = torch.nn.Linear(in_features=original_lora_B_weight.shape[1], out_features=len(id_list), bias=False).to(accelerator.device)
+            original_lora_B_weight = original_lm_head.modules_to_save.default.lora_B["default"].weight.clone()
+            self.lora_B = torch.nn.Linear(in_features=original_lora_B_weight.shape[1], out_features=original_lora_B_weight.shape[0], bias=False).to(accelerator.device)
             self.lora_B.weight.data = original_lora_B_weight.to(torch.float32)
             self.lora_B.weight.requires_grad = True
             
@@ -587,8 +588,8 @@ def main(load_step):
                 self.id_list = [tokenizer.encode('A')[1], tokenizer.encode('B')[1]]
 
             if args.lm_head:
-                original_lm_head = model.base_model.model.lm_head
-                model.base_model.model.lm_head = CustomLMHead_lora(original_lm_head, self.id_list).to(accelerator.device) 
+                original_lm_head = model.base_model.model.classifier
+                model.base_model.model.lm_head = CustomLMHead_lora(original_lm_head).to(accelerator.device) 
             
             self.model = model
 
@@ -778,6 +779,7 @@ def main(load_step):
 
 
 if __name__ == "__main__":
-    step_list = [0,*list(range(999, 4000 , 1000))]
+    #step_list = [0,*list(range(999, 4000 , 1000))]
+    step_list = [0,4209,8419,12629,16839,21049]
     for load_step in step_list:
         main(load_step)

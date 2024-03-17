@@ -11,7 +11,6 @@ from pathlib import Path
 import datasets
 import evaluate
 import torch
-import torch.nn.functional as F
 from accelerate import Accelerator
 from accelerate.logging import get_logger
 from accelerate.utils import set_seed
@@ -149,7 +148,7 @@ def parse_args():
     parser.add_argument(
         "--checkpointing_steps",
         type=str,
-        default='1000',
+        default=None,
         help="Whether the various states should be saved at the end of every n steps, or 'epoch' for each epoch.",
     )
     parser.add_argument(
@@ -432,7 +431,7 @@ def main():
 
 
     
-    target_modules= ['query','value','classifier'] #['v_proj','q_proj']
+    target_modules=None #['v_proj','q_proj']
     if args.lm_head:
         #target_modules.append('lm_head')
         target_modules= ['classifier']
@@ -542,8 +541,6 @@ def main():
 
     # Optimizer
     # Split weights in two groups, one with weight decay and the other not.
-    
-    # Scheduler and math around the number of training steps.
     logger.info(f" Max training steps before recalculation = {args.max_train_steps}")
     overrode_max_train_steps = False
     num_update_steps_per_epoch = math.ceil(len(train_dataloader) / args.gradient_accumulation_steps)
@@ -552,6 +549,22 @@ def main():
     if args.max_train_steps is None:
         args.max_train_steps = args.num_train_epochs * num_update_steps_per_epoch
         overrode_max_train_steps = True
+   
+    # Scheduler and math around the number of training steps.
+    #logger.info(f" Max training steps before recalculation = {args.max_train_steps}")
+    #overrode_max_train_steps = False
+    #num_update_steps_per_epoch = math.ceil(len(train_dataloader) / args.gradient_accumulation_steps)
+    #logger.info(f" num_update_steps_per_epoch initial = {num_update_steps_per_epoch}")
+    #logger.info(f" num training epochs initial = {args.num_train_epochs}")
+    #if args.max_train_steps is not None:
+      #  args.num_train_epochs = math.ceil(args.max_train_steps / num_update_steps_per_epoch)
+    #logger.info(f"Adjusted num_train_epochs based on max_train_steps: {args.num_train_epochs}")
+
+    #if args.max_train_steps is None:
+        #args.max_train_steps = args.num_train_epochs * num_update_steps_per_epoch
+        #overrode_max_train_steps = True
+    logger.info(f"Adjusted num_train_epochs based on max_train_steps: {args.num_train_epochs}")
+
 
 
     # Prepare everything with our `accelerator`.
@@ -623,22 +636,38 @@ def main():
         model, optimizer, train_dataloader, eval_dataloader, lr_scheduler
     )
 
-    logger.info(f" num_update_steps_per_epoch before recalculation = {num_update_steps_per_epoch}")
     # We need to recalculate our total training steps as the size of the training dataloader may have changed
+    logger.info(f" num_update_steps_per_epoch before recalculation = {num_update_steps_per_epoch}")
     num_update_steps_per_epoch = math.ceil(len(train_dataloader) / args.gradient_accumulation_steps)
     logger.info(f" num_update_steps_per_epoch after recalculation = {num_update_steps_per_epoch}")
     if overrode_max_train_steps:
         args.max_train_steps = args.num_train_epochs * num_update_steps_per_epoch
     # Afterwards we recalculate our number of training epochs
-    logger.info(f" num training epochs before recalculation = {args.num_train_epochs}")
     args.num_train_epochs = math.ceil(args.max_train_steps / num_update_steps_per_epoch)
-    logger.info(f" num training epochs after recalculation = {args.num_train_epochs}")
-    logger.info(f" Max training steps after recalculation = {args.max_train_steps}")
+    logger.info(f" num training epochs before recalculation = {args.num_train_epochs}")
+
+    #logger.info(f" num_update_steps_per_epoch before recalculation = {num_update_steps_per_epoch}")
+    # We need to recalculate our total training steps as the size of the training dataloader may have changed
+    #num_update_steps_per_epoch = math.ceil(len(train_dataloader) / args.gradient_accumulation_steps)
+    #logger.info(f" num_update_steps_per_epoch after recalculation = {num_update_steps_per_epoch}")
+    #if overrode_max_train_steps:
+    #    args.max_train_steps = args.num_train_epochs * num_update_steps_per_epoch
+    # Afterwards we recalculate our number of training epochs
+    #logger.info(f" num training epochs before recalculation = {args.num_train_epochs}")
+    #args.num_train_epochs = math.ceil(args.max_train_steps / num_update_steps_per_epoch)
+    #logger.info(f" num training epochs after recalculation = {args.num_train_epochs}")
+    #logger.info(f" Max training steps after recalculation = {args.max_train_steps}")
+    
+    #logger.info(f"Final num_train_epochs: {args.num_train_epochs}")
+    #logger.info(f"Final max_train_steps: {args.max_train_steps}")
 
     # Figure out how many steps we should save the Accelerator states
     checkpointing_steps = args.checkpointing_steps
-    if checkpointing_steps is not None and checkpointing_steps.isdigit():
-        checkpointing_steps = int(checkpointing_steps)
+    #if checkpointing_steps is not None and checkpointing_steps.isdigit():
+        #checkpointing_steps = int(checkpointing_steps)
+    if checkpointing_steps is None:
+        checkpointing_steps = math.ceil(0.2*args.max_train_steps)
+        print(checkpointing_steps)
 
     # We need to initialize the trackers we use, and also store our configuration.
     # The trackers initializes automatically on the main process.
@@ -730,15 +759,14 @@ def main():
                             logits = outputs.logits.detach()
                             for j in range(logits.size(0)):
                                 probs = logits[j]  #F.softmax(logits[j], -1)
-                                softmax_probs = F.softmax(probs, -1)
                                 label = batch["labels"]
                                 output_dict = {
                                     'index': args.per_device_eval_batch_size * step + j,
                                     'true': label[j].item(),
                                     'pred': logits[j].argmax().item(),
-                                    'conf': softmax_probs.max().item(),
+                                    'conf': probs.max().item(),
                                     'logits': logits[j].cpu().numpy().tolist(),
-                                    'probs': softmax_probs.cpu().numpy().tolist(),
+                                    'probs': probs.cpu().numpy().tolist(),
                                 }
                                 output_dicts.append(output_dict)
 
