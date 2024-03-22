@@ -780,6 +780,6 @@ def main(load_step):
 
 if __name__ == "__main__":
     #step_list = [0,*list(range(999, 4000 , 1000))]
-    step_list = [0,4209,8419,12629,16839,21049]
+    step_list = [0,8418,16837,25256,33675,42094]
     for load_step in step_list:
         main(load_step)

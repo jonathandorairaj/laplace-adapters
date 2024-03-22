@@ -431,14 +431,18 @@ def main():
 
 
     
-    target_modules=None #['v_proj','q_proj']
+    target_modules=['query','value'] #['v_proj','q_proj']
     if args.lm_head:
-        #target_modules.append('lm_head')
-        target_modules= ['classifier']
+        target_modules.append('classifier')
+        #target_modules= ['classifier']
     peft_config = LoraConfig(task_type="SEQ_CLS", inference_mode=False, r=args.lora_r, lora_alpha=args.lora_alpha, lora_dropout=args.lora_dropout, target_modules=target_modules)
     model = get_peft_model(model, peft_config)
     model.print_trainable_parameters()
     print(model)
+
+    for name, module in model.named_modules():
+        if 'lora' in name.lower():  # Adjust the condition based on your naming convention
+            print(name)
 
     padding = "max_length" if args.pad_to_max_length else False
 
