@@ -282,18 +282,6 @@ def main():
             os.makedirs(args.output_dir, exist_ok=True)
     accelerator.wait_for_everyone()
 
-    # Get the datasets: you can either provide your own CSV/JSON training and evaluation files (see below)
-    # or specify a GLUE benchmark task (the dataset will be downloaded automatically from the datasets Hub).
-
-    # For CSV/JSON files, this script will use as labels the column called 'label' and as pair of sentences the
-    # sentences in columns called 'sentence1' and 'sentence2' if such column exists or the first two columns not named
-    # label if at least two columns are provided.
-
-    # If the CSVs/JSONs contain only one non-label column, the script does single sentence classification on this
-    # single column. You can easily tweak this behavior (see below)
-
-    # In distributed training, the load_dataset function guarantee that only one local process can concurrently
-    # download the dataset.
     if args.task_name is not None:
         # Downloading and loading a dataset from the hub.
         if args.task_name in ['wnli', 'rte', 'mrpc', 'cola', 'sst2', 'qnli', 'qqp', 'mnli','stsb']:
@@ -346,12 +334,21 @@ def main():
     model.set_active_adapters(args.task_name)
 
     model.train_adapter(args.task_name)
-    model.print_trainable_parameters()
+    #model.print_trainable_parameters()
+    print(model.adapter_summary())
     print(model)
 
     padding = "max_length" if args.pad_to_max_length else False
 
-    processed_datasets = preprocess_function(raw_datasets,tokenizer,args.task_name,args.max_length,padding)
+    #processed_datasets = preprocess_function(raw_datasets,tokenizer,args,padding)
+
+    processed_datasets = raw_datasets.map(
+    lambda examples: preprocess_function(examples,tokenizer,args,padding),
+    batched=True,
+    remove_columns=raw_datasets["train"].column_names,
+    desc="Running tokenizer on dataset",
+    )
+
 
     # print('====train data====')
     train_dataset = processed_datasets["train"]
@@ -634,9 +631,10 @@ def main():
                             )
                             if accelerator.is_main_process:
                                 tokenizer.save_pretrained(output_dir)
-                            
+                        model.save_adapter(output_dir, args.task_name, with_head=True)
 
                         all_results = {f"eval_{k}": v for k, v in eval_metric.items()}
+                        
 
                         if test_loader_name == 'val':
                             all_results_output_path = os.path.join(output_dir, f"all_results_val.json")

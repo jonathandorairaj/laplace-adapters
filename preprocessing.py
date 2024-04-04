@@ -1,7 +1,7 @@
 
 
 
-def preprocess_function(examples, tokenizer, args.task_name, args.max_length, padding):
+def preprocess_function(examples, tokenizer, args, padding):
         if args.task_name == 'boolq':
             texts = [f"Answer the question with only True or False: {question} Context: {passage}" for passage, question in zip(examples['passage'], examples['question'])]
             result = tokenizer(texts, padding=padding, max_length=args.max_length, truncation=True)
