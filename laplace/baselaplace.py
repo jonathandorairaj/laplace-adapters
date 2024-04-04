@@ -426,6 +426,7 @@ class ParametricLaplace(BaseLaplace):
 
         with torch.no_grad():
             out = self.model(**batch)
+            #out = out.logits
 
         self.n_outputs = out.shape[-1]
         setattr(self.model, 'output_size', self.n_outputs)

@@ -5,7 +5,7 @@ import math
 import os
 import random
 from pathlib import Path
-
+import numpy as np
 import datasets
 import evaluate
 import torch
@@ -204,10 +204,14 @@ def parse_args():
         help="custom cache directory for GLUE datasets"
     )
     #parser.add_argument("--max_step", type=int, required=True, help="Maximum step value for the step list based on number of checkpoints saved.")
-
+    parser.add_argument("--step_list",type = str,default = None)
     args = parser.parse_args()
 
     print(args)
+    if args.step_list:
+        args.step_list = [int(step) for step in args.step_list.split(',')]
+    else:
+        args.step_list = []
 
     peft_method = 'adapters'
     if args.testing_set != 'val':
@@ -260,6 +264,26 @@ def main(args,load_step):
     step_dir = os.path.join(args.cache_dir, subfolder_name)
     os.makedirs(step_dir, exist_ok=True)
 
+    # Setup logging and seed outside of main if they don't change per iteration
+    logging.basicConfig(
+        format="%(asctime)s - %(levelname)s - %(name)s - %(message)s",
+        datefmt="%m/%d/%Y %H:%M:%S",
+        level=logging.INFO,
+    )
+    logger = logging.getLogger(__name__)
+    set_seed(args.seed)
+
+    # Initialize the accelerator once, if its configuration does not change
+    accelerator = Accelerator(log_with=args.report_to, project_dir=args.output_dir) if args.with_tracking else Accelerator()
+
+    logger.info(accelerator.state)
+    if accelerator.is_local_main_process:
+        datasets.utils.logging.set_verbosity_warning()
+        transformers.utils.logging.set_verbosity_info()
+    else:
+        datasets.utils.logging.set_verbosity_error()
+        transformers.utils.logging.set_verbosity_error()
+
     # Handle the repository creation
     if accelerator.is_main_process:
         os.makedirs(args.output_dir, exist_ok=True)
@@ -294,14 +318,17 @@ def main(args,load_step):
         args.model_name_or_path, load_in_8bit=False
     )
 
-    num_labels = 1 if args.task_name is 'stsb' else len(np.unique(raw_datasets['train']['label']))
+    num_labels = 1 if args.task_name == 'stsb' else len(np.unique(raw_datasets['train']['label']))
     logger.info(f" Number of labels detected = {num_labels}")
 
     model.add_classification_head(args.task_name, num_labels=num_labels)
 
     #config = DoubleSeqBnConfig()
 
-    model.load_adapter(args.output_dir)
+    #model.load_adapter(output_dir)
+
+    adapter_name = model.load_adapter(output_dir)
+    logger.info(f"Adapter Name = {adapter_name}")
     model.set_active_adapters(args.task_name)
 
     print('======')
@@ -311,7 +338,7 @@ def main(args,load_step):
     # check make sure correct params are frozen 
     for name, param in model.named_parameters():
         param.requires_grad = False
-        if 'lora' in name:
+        if adapter_name in name:
             if 'all' in args.laplace_sub:
                 param.requires_grad = True
 
@@ -365,6 +392,31 @@ def main(args,load_step):
 
     if args.testing_set != 'val':
         val_dataloader = DataLoader(val_dataset, shuffle=False, collate_fn=data_collator, batch_size=args.per_device_eval_batch_size)
+
+    class WrappedModel(torch.nn.Module):
+            def __init__(self, model):
+                super().__init__()
+
+                if args.task_name == 'boolq':
+                    self.id_list = [tokenizer.encode('False')[1], tokenizer.encode('True')[1]]
+                elif args.task_name == 'openbookqa':
+                    self.id_list = [tokenizer.encode('A')[1], tokenizer.encode('B')[1], tokenizer.encode('C')[1], tokenizer.encode('D')[1]]
+                elif 'ARC' in args.task_name:
+                    self.id_list = [tokenizer.encode('A')[1], tokenizer.encode('B')[1], tokenizer.encode('C')[1], tokenizer.encode('D')[1]]
+                elif 'winogrande' in args.task_name:
+                    self.id_list = [tokenizer.encode('A')[1], tokenizer.encode('B')[1]]
+                
+                self.model = model
+                print(self.model)
+
+
+            def forward(self, **kwargs):
+                kwargs.pop('labels', None)
+                output_dict = self.model(**kwargs)
+                logits = output_dict['logits']
+                return logits.to(torch.float32)
+          
+    model = WrappedModel(model)
 
     print('====model====')
     # print(model.model.base_model.model.lm_head.linear.weight)
@@ -535,26 +587,6 @@ def main(args,load_step):
 
 if __name__ == "__main__":
     args = parse_args()
-
-    # Setup logging and seed outside of main if they don't change per iteration
-    logging.basicConfig(
-        format="%(asctime)s - %(levelname)s - %(name)s - %(message)s",
-        datefmt="%m/%d/%Y %H:%M:%S",
-        level=logging.INFO,
-    )
-    logger = logging.getLogger(__name__)
-    set_seed(args.seed)
-
-    # Initialize the accelerator once, if its configuration does not change
-    accelerator = Accelerator(log_with=args.report_to, project_dir=args.output_dir) if args.with_tracking else Accelerator()
-
-    logger.info(accelerator.state, main_process_only=False)
-    if accelerator.is_local_main_process:
-        datasets.utils.logging.set_verbosity_warning()
-        transformers.utils.logging.set_verbosity_info()
-    else:
-        datasets.utils.logging.set_verbosity_error()
-        transformers.utils.logging.set_verbosity_error()
 
     step_list = args.step_list
     #step_list = [0,8418,16837,25256,33675,42094]
