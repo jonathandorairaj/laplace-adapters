@@ -53,7 +53,7 @@ from adapters import (
 
 )
 
-from preprocessing import preprocess_function
+import preprocessing 
 
 
 logger = get_logger(__name__)
@@ -326,7 +326,12 @@ def main():
     num_labels = len(np.unique(raw_datasets['train']['label']))
     logger.info(f" Number of labels detected = {num_labels}")
 
-    model.add_classification_head(args.task_name, num_labels=num_labels)
+    is_regression = args.task_name.lower() == "stsb"
+    if 'stsb' in args.task_name:
+      model.add_classification_head(args.task_name,num_labels = 1)
+    else:
+      model.add_classification_head(args.task_name, num_labels=num_labels)
+    
 
     config = DoubleSeqBnConfig()
 
@@ -343,7 +348,7 @@ def main():
     #processed_datasets = preprocess_function(raw_datasets,tokenizer,args,padding)
 
     processed_datasets = raw_datasets.map(
-    lambda examples: preprocess_function(examples,tokenizer,args,padding),
+    lambda examples: preprocessing.preprocess_function(examples,tokenizer,args,padding),
     batched=True,
     remove_columns=raw_datasets["train"].column_names,
     desc="Running tokenizer on dataset",
@@ -352,6 +357,7 @@ def main():
 
     # print('====train data====')
     train_dataset = processed_datasets["train"]
+    #print(f'Train dataset labels shape : {train_dataset.labels.shape}')
     # print('====validation data====')
     processed_dataset = processed_datasets["validation_matched" if args.task_name == "mnli" else "validation"]
 
@@ -459,7 +465,7 @@ def main():
 
     #model = WrappedModel(model)
 
-    print(model)
+    #print(model)
 
     no_decay = ["bias", "LayerNorm.weight"]
     optimizer_grouped_parameters = [
@@ -559,7 +565,7 @@ def main():
             resume_step = int(training_difference.replace("step_", "")) * args.gradient_accumulation_steps
             starting_epoch = resume_step // len(train_dataloader)
             resume_step -= starting_epoch * len(train_dataloader)
-            completed_steps = resume_step // args.gradient_accumulation_step
+            completed_steps = resume_step // args.gradient_accumulation_steps
 
     # update the progress_bar if load from checkpoint
     progress_bar.update(completed_steps)
@@ -569,6 +575,8 @@ def main():
     if args.testing_set != 'val':
         test_loader_list.append(val_dataloader)
         test_loader_names.append('val')
+
+    loss_func = torch.nn.MSELoss if 'stsb' in args.task_name else torch.nn.CrossEntropyLoss() 
         
     for epoch in range(starting_epoch, args.num_train_epochs):
         active_dataloader = train_dataloader
@@ -588,12 +596,30 @@ def main():
                         for step, batch in tqdm(enumerate(test_loader)):
                             with torch.no_grad():
                                 outputs = model(**batch)
-                            predictions = outputs.logits.argmax(dim=-1) #if not is_regression else outputs.logits.squeeze()
+                            if is_regression:
+                              predictions = outputs.logits.squeeze(-1)  # Squeeze if necessary
+                            else:
+                              predictions = outputs.logits.argmax(dim=-1)
+                            #predictions = outputs.logits.argmax(dim=-1) #if not is_regression else outputs.logits.squeeze()
 
                             logits = outputs.logits.detach()
+                            label = batch["labels"]
                             for j in range(logits.size(0)):
-                                probs = logits[j]  #F.softmax(logits[j], -1)
-                                label = batch["labels"]
+                              if is_regression:
+                                probs = [-1,-1]
+                                pred = logits[j].item()
+                                output_dict = {
+                                    'index': args.per_device_eval_batch_size * step + j,
+                                    'true': label[j].item(),
+                                    'pred': pred,
+                                    'conf': -1,
+                                    'logits': logits[j].cpu().numpy().tolist(),
+                                    'probs': -1,
+                                  }
+                              else: 
+                                probs = logits[j]
+                                pred = logits[j].argmax().item()  #F.softmax(logits[j], -1)
+                              #label = batch["labels"]
                                 output_dict = {
                                     'index': args.per_device_eval_batch_size * step + j,
                                     'true': label[j].item(),
@@ -601,8 +627,8 @@ def main():
                                     'conf': probs.max().item(),
                                     'logits': logits[j].cpu().numpy().tolist(),
                                     'probs': probs.cpu().numpy().tolist(),
-                                }
-                                output_dicts.append(output_dict)
+                                  }
+                              output_dicts.append(output_dict)
 
                             predictions, references = accelerator.gather((predictions, batch["labels"]))
                             # If we are in a multiprocess environment, the last batch has duplicates
@@ -664,11 +690,13 @@ def main():
         
             if completed_steps > args.max_train_steps:
                 break
-            
+            #print(f'Train batch keys are : {train_batch.keys()}')
             model.train()
             outputs = model(**train_batch)
             y = train_batch['labels']
-            loss = torch.nn.CrossEntropyLoss()(outputs.logits, y)
+            #logger.info(f'Y shape : {y.shape}')
+            loss = loss_func()(outputs.logits.squeeze(-1), y)
+            #print(outputs.logits)
 
             # We keep track of the loss at each epoch
             if args.with_tracking:

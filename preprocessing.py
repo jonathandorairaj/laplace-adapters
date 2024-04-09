@@ -28,6 +28,7 @@ def preprocess_function(examples, tokenizer, args, padding):
             result["labels"] = examples["label"]
         elif 'mnli' in args.task_name:
             result = tokenizer(examples["premise"], examples["hypothesis"], truncation=True, padding=padding, max_length=args.max_length)
+            result["labels"] = examples["label"]
         elif 'sst2' in args.task_name:
             result = tokenizer(examples['sentence'], truncation=True, padding=padding, max_length=args.max_length)
             result["labels"] = examples["label"]
