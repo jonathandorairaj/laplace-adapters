@@ -626,9 +626,8 @@ def main():
                             #accelerator.unwrap_model(model).model.save_pretrained(
                             #    output_dir, is_main_process=accelerator.is_main_process, save_function=accelerator.save
                             #)
-                            model.save_pretrained(output_dir,
-                            save_function=accelerator.save  # Ensures compatibility with Accelerate's distributed file handling
-                            )
+                            #model.save_pretrained(output_dir,save_function=accelerator.save)  # Ensures compatibility with Accelerate's distributed file handling
+                            
                             if accelerator.is_main_process:
                                 tokenizer.save_pretrained(output_dir)
                         model.save_adapter(output_dir, args.task_name, with_head=True)
