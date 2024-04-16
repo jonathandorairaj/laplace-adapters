@@ -1,3 +1,4 @@
+
 import os
 
 import argparse
@@ -53,7 +54,8 @@ from adapters import (
 
 )
 
-import preprocessing 
+import preprocessing
+from memory import save_gpu_stats 
 
 
 logger = get_logger(__name__)
@@ -198,6 +200,7 @@ def parse_args():
     #parser.add_argument("--lora_dropout", type=float, default=0.1)
     parser.add_argument("--testing_set", type=str, default='val')
     parser.add_argument("--lm_head", action="store_true", default=True)
+    parser.add_argument("--leave_out", type=str, default=None, help="Comma-separated list of integers to leave out")
     args = parser.parse_args()
 
     print(args)
@@ -206,7 +209,6 @@ def parse_args():
     if args.testing_set != 'val':
         peft_method += args.testing_set
 
-    
     args.output_dir += f'/{args.task_name}/{args.model_name_or_path}_{peft_method}_{args.learning_rate}_{args.seed}'
 
     os.makedirs(args.output_dir, exist_ok=True)
@@ -239,6 +241,8 @@ def main():
     # information sent is the one passed as arguments along with your Python/PyTorch versions.
     send_example_telemetry("run_glue_no_trainer", args)
 
+    print(os.getcwd())
+
     # Initialize the accelerator. We will let the accelerator handle device placement for us in this example.
     # If we're using tracking, we also need to initialize it here and it will by default pick up all supported trackers
     # in the environment
@@ -246,12 +250,27 @@ def main():
         Accelerator(log_with=args.report_to, project_dir=args.output_dir) if args.with_tracking else Accelerator()
     )
     # Make one log on every process with the configuration for debugging.
+
+    log_file_path = os.path.join(args.output_dir, 'logfile.log')
+
     logging.basicConfig(
         format="%(asctime)s - %(levelname)s - %(name)s - %(message)s",
         datefmt="%m/%d/%Y %H:%M:%S",
         level=logging.INFO,
+        filename=log_file_path
     )
-    logger.info(accelerator.state, main_process_only=False)
+    console_handler = logging.StreamHandler()
+    console_handler.setLevel(logging.INFO)
+    formatter = logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")
+    console_handler.setFormatter(formatter)
+
+    logger = logging.getLogger(__name__)
+    logger.addHandler(console_handler)
+
+
+    #logger.info(accelerator.state, main_process_only=False)
+
+
     if accelerator.is_local_main_process:
         datasets.utils.logging.set_verbosity_warning()
         transformers.utils.logging.set_verbosity_info()
@@ -262,6 +281,9 @@ def main():
     # If passed along, set the training seed now.
     if args.seed is not None:
         set_seed(args.seed)
+
+    #args.leave_out = args.leave_out.split(",") if args.leave_out else None
+    print(args.leave_out)
 
     # Handle the repository creation
     if accelerator.is_main_process:
@@ -332,16 +354,26 @@ def main():
     else:
       model.add_classification_head(args.task_name, num_labels=num_labels)
     
-
-    config = DoubleSeqBnConfig()
+    if args.leave_out is not None:
+      print('Entering args.leave_out condition')
+      leave_out = list(map(int, args.leave_out.split(",")))
+      config = DoubleSeqBnConfig(leave_out=leave_out)
+    else:
+      config = DoubleSeqBnConfig()
 
     model.add_adapter(args.task_name, config=config)
     model.set_active_adapters(args.task_name)
 
     model.train_adapter(args.task_name)
     #model.print_trainable_parameters()
-    print(model.adapter_summary())
-    print(model)
+    logger.info(model.adapter_summary())
+    logger.info('printing model')
+    logger.info(model)
+
+    for name,module in model.named_modules():
+      if args.task_name in name:
+        print(name)
+    
 
     padding = "max_length" if args.pad_to_max_length else False
 
@@ -663,6 +695,8 @@ def main():
                         model.save_adapter(output_dir, args.task_name, with_head=True)
 
                         all_results = {f"eval_{k}": v for k, v in eval_metric.items()}
+
+                        gpu_dict = save_gpu_stats()
                         
 
                         if test_loader_name == 'val':
@@ -688,7 +722,11 @@ def main():
                             for i, output_dict in enumerate(output_dicts):
                                 output_dict_str = json.dumps(output_dict)
                                 f.write(f'{output_dict_str}\n')
-
+                        
+                        # Write GPU statistics to a JSON file
+                        output_path = os.path.join(output_dir, f'gpu_stats.json')
+                        with open(output_path, "w+") as f:
+                            json.dump(gpu_dict, f, indent=4)
 
                         del output_dicts, all_results, output_dict, eval_metric, logits, probs, label, predictions, references, outputs
         
