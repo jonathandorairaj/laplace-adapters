@@ -5,7 +5,7 @@ import math
 import os
 import random
 from pathlib import Path
-
+import numpy as np
 import datasets
 import evaluate
 import torch
@@ -16,6 +16,8 @@ from datasets import load_dataset
 from huggingface_hub import Repository, create_repo
 from torch.utils.data import DataLoader
 from tqdm.auto import tqdm
+
+import preprocessing 
 
 import transformers
 from transformers import (
@@ -415,13 +417,18 @@ def main(load_step):
     if args.task_name in ['boolq']: #,'winogrande_m', 'winogrande_s']:
         tokenizer.add_eos_token = True
     
+    num_labels = len(np.unique(raw_datasets['train']['label']))
+    logger.info(f" Number of labels detected = {num_labels}")
 
+    is_regression = args.task_name.lower() == "stsb"
+    if 'stsb' in args.task_name:
+      num_labels = 1
     output_dir = args.output_dir + f'/step_{args.load_step}'
 
 
     peft_config = PeftConfig.from_pretrained(output_dir)
     model = BertForSequenceClassification.from_pretrained(
-        peft_config.base_model_name_or_path, load_in_8bit=False
+        peft_config.base_model_name_or_path, load_in_8bit=False,num_labels = num_labels
     )
     model = PeftModel.from_pretrained(model, output_dir)
     model.print_trainable_parameters()
@@ -441,63 +448,12 @@ def main(load_step):
 
     padding = "max_length" if args.pad_to_max_length else False
 
-    def preprocess_function(examples):
-        if args.task_name == 'boolq':
-            texts = [f"Answer the question with only True or False: {question} Context: {passage}" for passage, question in zip(examples['passage'], examples['question'])]
-            result = tokenizer(texts, padding=padding, max_length=args.max_length, truncation=True)
-            result["labels"] = examples["label"]
-        elif 'openbookqa' in args.task_name:
-            choices_list = [' '.join(f'{label}. {text}' for label, text in zip(choices['label'], choices['text'])) for choices in examples['choices']]
-            texts = [f"Select one of the choices that answers the following question: {question} Choices: {choices} Answer:" for question, choices in zip(examples['question_stem'], choices_list)]
-            result = tokenizer(texts, padding=padding, max_length=args.max_length, truncation=True)
-            map_dict = {"A": 0, "B": 1, "C": 2, "D": 3, "1": 0, "2": 1, "3": 2, "4": 3}
-            result["labels"] = [map_dict[label] for label in examples["answerKey"]]
-        elif 'ARC' in args.task_name:
-            choices_list = [' '.join(f'{label}. {text}' for label, text in zip(choices['label'], choices['text'])) for choices in examples['choices']]
-            texts = [f"Select one of the choices that answers the following question: {question} Choices: {choices} Answer:" for question, choices in zip(examples['question'], choices_list)]
-            result = tokenizer(texts, padding=padding, max_length=args.max_length, truncation=True)
-            map_dict = {"A": 0, "B": 1, "C": 2, "D": 3, "1": 0, "2": 1, "3": 2, "4": 3}
-            result["labels"] = [map_dict[label] for label in examples["answerKey"]]
-        elif 'winogrande' in  args.task_name:
-            texts = [f"Select one of the choices that answers the following question: {question} Choices: A. {option1}. B {option2}. Answer:" for question, option1, option2 in zip(examples['sentence'], examples['option1'], examples['option2'])]
-            result = tokenizer(texts, padding=padding, max_length=args.max_length, truncation=True)
-            map_dict = {"1": 0, "2": 1, "":None}
-            result["labels"] = [map_dict[label] for label in examples["answer"]]
-        elif 'cola' in args.task_name:
-            result = tokenizer(examples["sentence"], max_length=args.max_length, truncation=True, return_overflowing_tokens=False)
-            result["labels"] = examples["label"]
-        elif 'mnli' in args.task_name:
-            result = tokenizer(examples["premise"], examples["hypothesis"], truncation=True, padding=padding, max_length=args.max_length)
-            result["labels"] = examples["label"]
-        elif 'sst2' in args.task_name:
-            result = tokenizer(examples['sentence'], truncation=True, padding=padding, max_length=args.max_length)
-            result["labels"] = examples["label"]
-        elif 'stsb' in args.task_name:
-            result = tokenizer(examples["sentence1"], examples["sentence2"],max_length = args.max_length,truncation=True,return_overflowing_tokens=False)
-            result["labels"] = examples["label"]
-        elif 'qnli' in args.task_name:
-            result = tokenizer(examples["question"], examples["sentence"],max_length = args.max_length,truncation=True,return_overflowing_tokens=False)
-            result["labels"] = examples["label"]
-        elif 'qqp' in args.task_name:
-            result = tokenizer(examples['question1'], examples['question2'], truncation=True, padding=padding, max_length=args.max_length)
-            result["labels"] = examples["label"]
-        elif 'rte'  in args.task_name:
-            result = tokenizer(examples['sentence1'], examples['sentence2'], truncation=True, padding=padding, max_length=args.max_length)
-            result["labels"] = examples["label"]
-        elif 'wnli' in args.task_name:
-            result = tokenizer(examples['sentence1'], examples['sentence2'], truncation=True, padding=padding, max_length=args.max_length)
-            result["labels"] = examples["label"]
-        elif 'mrpc' in args.task_name:
-            result = tokenizer(examples["sentence1"], examples["sentence2"], truncation=True,padding=padding, max_length=args.max_length)
-            result["labels"] = examples["label"]
-        return result
-
     with accelerator.main_process_first():
         processed_datasets = raw_datasets.map(
-            preprocess_function,
-            batched=True,
-            remove_columns=raw_datasets["train"].column_names,
-            desc="Running tokenizer on dataset",
+        lambda examples: preprocessing.preprocess_function(examples,tokenizer,args,padding),
+        batched=True,
+        remove_columns=raw_datasets["train"].column_names,
+        desc="Running tokenizer on dataset",
         )
 
     train_dataset = processed_datasets["train"]
@@ -780,6 +736,6 @@ def main(load_step):
 
 if __name__ == "__main__":
     #step_list = [0,*list(range(999, 4000 , 1000))]
-    step_list = [0,8418,16837,25256,33675,42094]
+    step_list = [0,49087,98175,147263,196351,245439]
     for load_step in step_list:
         main(load_step)

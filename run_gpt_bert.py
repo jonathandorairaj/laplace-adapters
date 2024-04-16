@@ -7,7 +7,7 @@ import math
 import os
 import random
 from pathlib import Path
-
+import numpy as np
 import datasets
 import evaluate
 import torch
@@ -47,6 +47,7 @@ from peft import (
     PromptEncoderConfig,
 )
 
+import preprocessing 
 
 logger = get_logger(__name__)
 
@@ -415,18 +416,24 @@ def main():
         for choice, count in counter_valid.items():
             print(f"Choice {choice}: {count} occurrences")
 
+    num_labels = len(np.unique(raw_datasets['train']['label']))
+    logger.info(f" Number of labels detected = {num_labels}")
 
+    is_regression = args.task_name.lower() == "stsb"
+    if 'stsb' in args.task_name:
+      num_labels = 1
     # Load pretrained model and tokenizer
     #
     # In distributed training, the .from_pretrained methods guarantee that only one local process can concurrently
     # download model & vocab.
     tokenizer = AutoTokenizer.from_pretrained(args.model_name_or_path, use_fast=not args.use_slow_tokenizer, padding_side='left', use_auth_token='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')
+    
     #tokenizer.pad_token = tokenizer.eos_token
     if args.task_name in ['boolq']:  #,'winogrande_m', 'winogrande_s']:
         tokenizer.add_eos_token = True
     
     model = BertForSequenceClassification.from_pretrained(
-        args.model_name_or_path, load_in_8bit=False #True
+        args.model_name_or_path, load_in_8bit=False, num_labels = num_labels #True
     )
 
 
@@ -446,63 +453,12 @@ def main():
 
     padding = "max_length" if args.pad_to_max_length else False
 
-    def preprocess_function(examples):
-        if args.task_name == 'boolq':
-            texts = [f"Answer the question with only True or False: {question} Context: {passage}" for passage, question in zip(examples['passage'], examples['question'])]
-            result = tokenizer(texts, padding=padding, max_length=args.max_length, truncation=True)
-            result["labels"] = examples["label"]
-        elif 'openbookqa' in args.task_name:
-            choices_list = [' '.join(f'{label}. {text}' for label, text in zip(choices['label'], choices['text'])) for choices in examples['choices']]
-            texts = [f"Select one of the choices that answers the following question: {question} Choices: {choices} Answer:" for question, choices in zip(examples['question_stem'], choices_list)]
-            result = tokenizer(texts, padding=padding, max_length=args.max_length, truncation=True)
-            map_dict = {"A": 0, "B": 1, "C": 2, "D": 3, "1": 0, "2": 1, "3": 2, "4": 3}
-            result["labels"] = [map_dict[label] for label in examples["answerKey"]]
-        elif 'ARC' in args.task_name:
-            choices_list = [' '.join(f'{label}. {text}' for label, text in zip(choices['label'], choices['text'])) for choices in examples['choices']]
-            texts = [f"Select one of the choices that answers the following question: {question} Choices: {choices} Answer:" for question, choices in zip(examples['question'], choices_list)]
-            result = tokenizer(texts, padding=padding, max_length=args.max_length, truncation=True)
-            map_dict = {"A": 0, "B": 1, "C": 2, "D": 3, "1": 0, "2": 1, "3": 2, "4": 3}
-            result["labels"] = [map_dict[label] for label in examples["answerKey"]]
-        elif 'winogrande' in  args.task_name:
-            texts = [f"Select one of the choices that answers the following question: {question} Choices: A. {option1}. B {option2}. Answer:" for question, option1, option2 in zip(examples['sentence'], examples['option1'], examples['option2'])]
-            result = tokenizer(texts, padding=padding, max_length=args.max_length, truncation=True)
-            map_dict = {"1": 0, "2": 1, "":None}
-            result["labels"] = [map_dict[label] for label in examples["answer"]]
-        elif 'cola' in args.task_name:
-            result = tokenizer(examples["sentence"], max_length=args.max_length, truncation=True, return_overflowing_tokens=False)
-            result["labels"] = examples["label"]
-        elif 'mnli' in args.task_name:
-            result = tokenizer(examples["premise"], examples["hypothesis"], truncation=True, padding=padding, max_length=args.max_length)
-        elif 'sst2' in args.task_name:
-            result = tokenizer(examples['sentence'], truncation=True, padding=padding, max_length=args.max_length)
-            result["labels"] = examples["label"]
-        elif 'stsb' in args.task_name:
-            result = tokenizer(examples["sentence1"], examples["sentence2"],max_length = args.max_length,truncation=True,return_overflowing_tokens=False)
-            result["labels"] = examples["label"]
-        elif 'qnli' in args.task_name:
-            result = tokenizer(examples["question"], examples["sentence"],max_length = args.max_length,truncation=True,return_overflowing_tokens=False)
-            result["labels"] = examples["label"]
-        elif 'qqp' in args.task_name:
-            result = tokenizer(examples['question1'], examples['question2'], truncation=True, padding=padding, max_length=args.max_length)
-            result["labels"] = examples["label"]
-        elif 'rte'  in args.task_name:
-            result = tokenizer(examples['sentence1'], examples['sentence2'], truncation=True, padding=padding, max_length=args.max_length)
-            result["labels"] = examples["label"]
-        elif 'wnli' in args.task_name:
-            result = tokenizer(examples['sentence1'], examples['sentence2'], truncation=True, padding=padding, max_length=args.max_length)
-            result["labels"] = examples["label"]
-        elif 'mrpc' in args.task_name:
-            result = tokenizer(examples["sentence1"], examples["sentence2"], truncation=True,padding=padding, max_length=args.max_length)
-            result["labels"] = examples["label"]
-        return result
-
-    with accelerator.main_process_first():
-        processed_datasets = raw_datasets.map(
-            preprocess_function,
-            batched=True,
-            remove_columns=raw_datasets["train"].column_names,
-            desc="Running tokenizer on dataset",
-        )
+    processed_datasets = raw_datasets.map(
+    lambda examples: preprocessing.preprocess_function(examples,tokenizer,args,padding),
+    batched=True,
+    remove_columns=raw_datasets["train"].column_names,
+    desc="Running tokenizer on dataset",
+    )
 
     # print('====train data====')
     train_dataset = processed_datasets["train"]

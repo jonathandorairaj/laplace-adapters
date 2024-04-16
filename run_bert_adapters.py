@@ -576,7 +576,11 @@ def main():
         test_loader_list.append(val_dataloader)
         test_loader_names.append('val')
 
-    loss_func = torch.nn.MSELoss if 'stsb' in args.task_name else torch.nn.CrossEntropyLoss() 
+    if 'stsb' in args.task_name:
+      loss_func = torch.nn.MSELoss()  # Creating an instance of MSELoss
+    else:
+      loss_func = torch.nn.CrossEntropyLoss()  # This was correct already
+    #loss_func = torch.nn.MSELoss if 'stsb' in args.task_name else torch.nn.CrossEntropyLoss() 
         
     for epoch in range(starting_epoch, args.num_train_epochs):
         active_dataloader = train_dataloader
@@ -694,8 +698,10 @@ def main():
             model.train()
             outputs = model(**train_batch)
             y = train_batch['labels']
+            if 'stsb' in args.task_name:
+              outputs.logits = outputs.logits.squeeze(-1)
             #logger.info(f'Y shape : {y.shape}')
-            loss = loss_func()(outputs.logits.squeeze(-1), y)
+            loss = loss_func(outputs.logits, y)
             #print(outputs.logits)
 
             # We keep track of the loss at each epoch
