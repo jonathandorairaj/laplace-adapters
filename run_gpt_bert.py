@@ -47,7 +47,8 @@ from peft import (
     PromptEncoderConfig,
 )
 
-import preprocessing 
+import preprocessing
+from memory import save_gpu_stats 
 
 logger = get_logger(__name__)
 
@@ -240,12 +241,22 @@ def main():
         Accelerator(log_with=args.report_to, project_dir=args.output_dir) if args.with_tracking else Accelerator()
     )
     # Make one log on every process with the configuration for debugging.
+    log_file_path = os.path.join(args.output_dir, 'logfile.log')
+
     logging.basicConfig(
         format="%(asctime)s - %(levelname)s - %(name)s - %(message)s",
         datefmt="%m/%d/%Y %H:%M:%S",
         level=logging.INFO,
+        filename=log_file_path
     )
-    logger.info(accelerator.state, main_process_only=False)
+    console_handler = logging.StreamHandler()
+    console_handler.setLevel(logging.INFO)
+    formatter = logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")
+    console_handler.setFormatter(formatter)
+
+    logger = logging.getLogger(__name__)
+    logger.addHandler(console_handler)
+    #logger.info(accelerator.state, main_process_only=False)
     if accelerator.is_local_main_process:
         datasets.utils.logging.set_verbosity_warning()
         transformers.utils.logging.set_verbosity_info()
@@ -288,135 +299,12 @@ def main():
 
     # In distributed training, the load_dataset function guarantee that only one local process can concurrently
     # download the dataset.
-    if args.task_name is not None:
-        # Downloading and loading a dataset from the hub.
-        if args.task_name in ['wnli', 'rte', 'mrpc', 'cola', 'sst2', 'qnli', 'qqp', 'mnli']:
-            cache_dir = "/content/cache/huggingface"
-            os.makedirs(cache_dir, exist_ok=True)
-            os.environ["HF_HOME"] = cache_dir
-            raw_datasets = load_dataset("glue", args.task_name)
-            task_output_dir = os.path.join(cache_dir, f"metrics/glue/{args.task_name}/outputs/{args.task_name}/{args.model_name_or_path}")
-            os.makedirs(task_output_dir, exist_ok=True)
-            print(task_output_dir)
-        elif args.task_name in ['cb', 'wic', 'boolq']:
-            raw_datasets = load_dataset("super_glue", args.task_name)
-        elif 'ARC' in args.task_name:
-            raw_datasets = load_dataset('ai2_arc', args.task_name)
-        elif 'winogrande' in args.task_name:
-            raw_datasets = load_dataset('winogrande', args.task_name)
-        else:
-            raw_datasets = load_dataset(args.task_name)
-    else:
-        # Loading the dataset from local csv or json file.
-        data_files = {}
-        if args.train_file is not None:
-            data_files["train"] = args.train_file
-        if args.validation_file is not None:
-            data_files["validation"] = args.validation_file
-        extension = (args.train_file if args.train_file is not None else args.validation_file).split(".")[-1]
-        raw_datasets = load_dataset(extension, data_files=data_files)
+    cache_dir = "/content/cache/huggingface" 
+    os.makedirs(cache_dir, exist_ok=True)
+    os.environ["HF_HOME"] = cache_dir
 
-    if 'ARC' in args.task_name or 'openbookqa' in args.task_name:
-        # Initialize counters
-        count_3_choices_train = 0
-        count_5_choices_train = 0
-        count_3_choices_valid = 0
-        count_5_choices_valid = 0
+    raw_datasets,num_labels= preprocessing.download_data(args,cache_dir)
 
-        # Count in the training dataset
-        for example in raw_datasets["train"]:
-            if len(example['choices']['label']) == 3:
-                count_3_choices_train += 1
-            elif len(example['choices']['label']) == 5:
-                count_5_choices_train += 1
-
-        # Count in the validation dataset
-        for example in raw_datasets["validation"]:
-            if len(example['choices']['label']) == 3:
-                count_3_choices_valid += 1
-            elif len(example['choices']['label']) == 5:
-                count_5_choices_valid += 1
-
-        # Get total counts
-        total_train = len(raw_datasets["train"])
-        total_valid = len(raw_datasets["validation"])
-
-        # Print counts
-        print('====counts train====')
-        print(f"Total number of training examples: {total_train}")
-        print(f"Number of training questions with 3 choices: {count_3_choices_train}")
-        print(f"Number of training questions with 5 choices: {count_5_choices_train}")
-
-        print('====counts valid====')
-        print(f"Total number of validation examples: {total_valid}")
-        print(f"Number of validation questions with 3 choices: {count_3_choices_valid}")
-        print(f"Number of validation questions with 5 choices: {count_5_choices_valid}")
-
-        # Filter the examples in the training dataset
-        filtered_train = raw_datasets["train"].filter(lambda example: len(example['choices']['label']) == 4)
-
-        # Filter the examples in the validation dataset
-        filtered_valid = raw_datasets["validation"].filter(lambda example: len(example['choices']['label']) == 4)
-
-        # Filter the examples in the test dataset
-        filtered_test = raw_datasets["test"].filter(lambda example: len(example['choices']['label']) == 4)
-
-        # Replace the original datasets with the filtered datasets
-        raw_datasets["train"] = filtered_train
-        raw_datasets["validation"] = filtered_valid
-        raw_datasets["test"] = filtered_test
-
-        print('====counts train====')
-        print(f"Total number of training examples: {len(raw_datasets['train'])}")
-        print('====counts valid====')
-        print(f"Total number of validation examples: {len(raw_datasets['validation'])}")
-
-        def convert_choices_to_alpha(example):
-            # Define a mapping from numerical to alphabetical labels
-            mapping = {'1': 'A', '2': 'B', '3': 'C', '4': 'D'}
-
-            # Convert the 'label' field in 'choices'
-            example['choices']['label'] = [mapping.get(label, label) for label in example['choices']['label']]
-
-            # Convert the 'answerKey' field
-            example['answerKey'] = mapping.get(example['answerKey'], example['answerKey'])
-
-            example['choices']['text'] = [text if text.endswith('.') else text + '.' for text in example['choices']['text']]
-            example['choices']['text'] = [text[0].upper() + text[1:] if text else text for text in example['choices']['text']]
-    
-
-            return example
-
-        # Apply the conversion to the training, validation, and test datasets
-        raw_datasets["train"] = raw_datasets["train"].map(convert_choices_to_alpha)
-        raw_datasets["validation"] = raw_datasets["validation"].map(convert_choices_to_alpha)
-        raw_datasets["test"] = raw_datasets["test"].map(convert_choices_to_alpha)
-
-        print('====train data====')
-        from collections import Counter
-
-        # Initialize counters for training and validation datasets
-        counter_train = Counter()
-        counter_valid = Counter()
-
-        # Count in the training dataset
-        for example in raw_datasets["train"]:
-            counter_train.update(example['answerKey'])
-
-        # Count in the validation dataset
-        for example in raw_datasets["validation"]:
-            counter_valid.update(example['answerKey'])
-
-        # Print the results
-        print("Training dataset counts:")
-        for choice, count in counter_train.items():
-            print(f"Choice {choice}: {count} occurrences")
-
-        print("Validation dataset counts:")
-        for choice, count in counter_valid.items():
-            print(f"Choice {choice}: {count} occurrences")
-
-    num_labels = len(np.unique(raw_datasets['train']['label']))
     logger.info(f" Number of labels detected = {num_labels}")
 
     is_regression = args.task_name.lower() == "stsb"
@@ -444,12 +332,12 @@ def main():
         #target_modules= ['classifier']
     peft_config = LoraConfig(task_type="SEQ_CLS", inference_mode=False, r=args.lora_r, lora_alpha=args.lora_alpha, lora_dropout=args.lora_dropout, target_modules=target_modules)
     model = get_peft_model(model, peft_config)
-    model.print_trainable_parameters()
+    logger.info(model.print_trainable_parameters())
     print(model)
 
     for name, module in model.named_modules():
         if 'lora' in name.lower():  # Adjust the condition based on your naming convention
-            print(name)
+            logger.info(name)
 
     padding = "max_length" if args.pad_to_max_length else False
 
@@ -570,7 +458,7 @@ def main():
 
     #model = WrappedModel(model)
 
-    print(model)
+    logger.info(model)
 
     no_decay = ["bias", "LayerNorm.weight"]
     optimizer_grouped_parameters = [
@@ -761,6 +649,8 @@ def main():
 
                         all_results = {f"eval_{k}": v for k, v in eval_metric.items()}
 
+                        gpu_dict = save_gpu_stats()
+
                         if test_loader_name == 'val':
                             all_results_output_path = os.path.join(output_dir, f"all_results_val.json")
                         else:
@@ -784,7 +674,11 @@ def main():
                             for i, output_dict in enumerate(output_dicts):
                                 output_dict_str = json.dumps(output_dict)
                                 f.write(f'{output_dict_str}\n')
-
+                        
+                        # Write GPU statistics to a JSON file
+                        output_path = os.path.join(output_dir, f'gpu_stats.json')
+                        with open(output_path, "w+") as f:
+                            json.dump(gpu_dict, f, indent=4)
 
                         del output_dicts, all_results, output_dict, eval_metric, logits, probs, label, predictions, references, outputs
         

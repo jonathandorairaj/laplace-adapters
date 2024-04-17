@@ -17,7 +17,7 @@ from huggingface_hub import Repository, create_repo
 from torch.utils.data import DataLoader
 from tqdm.auto import tqdm
 
-import preprocessing 
+from preprocessing import convert_choices_to_alpha,preprocess_function,
 
 import transformers
 from transformers import (
@@ -363,20 +363,7 @@ def main(load_step):
         print('====counts valid====')
         print(f"Total number of validation examples: {len(raw_datasets['validation'])}")
 
-        def convert_choices_to_alpha(example):
-            # Define a mapping from numerical to alphabetical labels
-            mapping = {'1': 'A', '2': 'B', '3': 'C', '4': 'D'}
-
-            # Convert the 'label' field in 'choices'
-            example['choices']['label'] = [mapping.get(label, label) for label in example['choices']['label']]
-
-            # Convert the 'answerKey' field
-            example['answerKey'] = mapping.get(example['answerKey'], example['answerKey'])
-
-            example['choices']['text'] = [text if text.endswith('.') else text + '.' for text in example['choices']['text']]
-            example['choices']['text'] = [text[0].upper() + text[1:] if text else text for text in example['choices']['text']]
-
-            return example
+        
 
         # Apply the conversion to the training, validation, and test datasets
         raw_datasets["train"] = raw_datasets["train"].map(convert_choices_to_alpha)
@@ -450,7 +437,7 @@ def main(load_step):
 
     with accelerator.main_process_first():
         processed_datasets = raw_datasets.map(
-        lambda examples: preprocessing.preprocess_function(examples,tokenizer,args,padding),
+        lambda examples: preprocess_function(examples,tokenizer,args,padding),
         batched=True,
         remove_columns=raw_datasets["train"].column_names,
         desc="Running tokenizer on dataset",
