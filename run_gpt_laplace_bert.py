@@ -17,7 +17,7 @@ from huggingface_hub import Repository, create_repo
 from torch.utils.data import DataLoader
 from tqdm.auto import tqdm
 
-from preprocessing import convert_choices_to_alpha,preprocess_function,
+from preprocessing import convert_choices_to_alpha,preprocess_function,download_data
 
 import transformers
 from transformers import (
@@ -193,7 +193,7 @@ def parse_args():
     parser.add_argument("--laplace_predict", type=str, default='mc_corr', help='probit bridge bridge_norm mc_indep mc_corr')
     parser.add_argument("--lm_head", action="store_true", default=False)
     parser.add_argument("--cache_dir", type=str,
-        default="/content/cache/huggingface/metrics/glue",
+        default="/content/cache/huggingface/metrics/",
         help="custom cache directory for GLUE datasets"
     )
     #parser.add_argument("--max_step", type=int, required=True, help="Maximum step value for the step list based on number of checkpoints saved.")
@@ -218,11 +218,22 @@ def parse_args():
     args.laplace_output_dir = f'outputs_laplace/{args.task_name}/{args.model_name_or_path}_{peft_method}_{args.lora_alpha}_{args.lora_dropout}_{args.learning_rate}_{args.seed}/'
     
     # custom cache dir
-    args.cache_dir += f"/{args.task_name}/outputs_laplace/{args.task_name}/{args.model_name_or_path}_{peft_method}_{args.lora_alpha}_{args.lora_dropout}_{args.learning_rate}_{args.seed}/"
+    if args.task_name in ['wnli', 'rte', 'mrpc', 'cola', 'sst2', 'qnli', 'qqp', 'mnli']:
+        args.cache_dir += f"/glue/{args.task_name}/outputs_laplace/{args.task_name}/{args.model_name_or_path}_{peft_method}_{args.lora_alpha}_{args.lora_dropout}_{args.learning_rate}_{args.seed}/"
+    elif args.task_name in ['cb', 'wic', 'boolq']:
+        args.cache_dir += f'super_glue/{args.task_name}/outputs_laplace/{args.task_name}/{args.model_name_or_path}_{peft_method}_{args.lora_alpha}_{args.lora_dropout}_{args.learning_rate}_{args.seed}/'
+    elif 'ARC' in args.task_name:
+        args.cache_dir += f'accuracy/default/outputs_laplace/{args.task_name}/{args.model_name_or_path}_{peft_method}_{args.lora_alpha}_{args.lora_dropout}_{args.learning_rate}_{args.seed}/'
+    elif 'winogrande' in args.task_name:
+        args.cache_dir += f'accuracy/default/outputs_laplace/{args.task_name}/{args.model_name_or_path}_{peft_method}_{args.lora_alpha}_{args.lora_dropout}_{args.learning_rate}_{args.seed}/'
+    
     os.makedirs(args.cache_dir, exist_ok=True)
 
     os.makedirs(args.output_dir, exist_ok=True)
 
+    # /content/cache/huggingface/metrics/accuracy/default/outputs_laplace/winogrande_s/google-bert/bert-base-uncased_lora_lmhead_16_0.1_5e-05_42/step_0
+
+    # /content/cache/huggingface/metrics/super_glue/boolq/outputs_laplace/boolq/google-bert/bert-base-uncased_lora_lmhead_16_0.1_5e-05_42/step_0
 
     # Sanity checks
     if args.task_name is None and args.train_file is None and args.validation_file is None:
@@ -297,104 +308,7 @@ def main(load_step):
 
     # In distributed training, the load_dataset function guarantee that only one local process can concurrently
     # download the dataset.
-    if args.task_name in ['wnli', 'rte', 'mrpc', 'cola', 'sst2', 'qnli', 'qqp', 'mnli']:
-        raw_datasets = load_dataset("glue", args.task_name)
-    elif args.task_name in ['cb', 'wic', 'boolq']:
-        raw_datasets = load_dataset("super_glue", args.task_name)
-    elif 'ARC' in args.task_name:
-        raw_datasets = load_dataset('ai2_arc', args.task_name)
-    elif 'winogrande' in args.task_name:
-        raw_datasets = load_dataset('winogrande', args.task_name)
-    else:
-        raw_datasets = load_dataset(args.task_name)
-
-    if 'ARC' in args.task_name or 'openbookqa' in args.task_name:
-        # Initialize counters
-        count_3_choices_train = 0
-        count_5_choices_train = 0
-        count_3_choices_valid = 0
-        count_5_choices_valid = 0
-
-        # Count in the training dataset
-        for example in raw_datasets["train"]:
-            if len(example['choices']['label']) == 3:
-                count_3_choices_train += 1
-            elif len(example['choices']['label']) == 5:
-                count_5_choices_train += 1
-
-        # Count in the validation dataset
-        for example in raw_datasets["validation"]:
-            if len(example['choices']['label']) == 3:
-                count_3_choices_valid += 1
-            elif len(example['choices']['label']) == 5:
-                count_5_choices_valid += 1
-
-        # Get total counts
-        total_train = len(raw_datasets["train"])
-        total_valid = len(raw_datasets["validation"])
-
-        # Print counts
-        print('====counts train====')
-        print(f"Total number of training examples: {total_train}")
-        print(f"Number of training questions with 3 choices: {count_3_choices_train}")
-        print(f"Number of training questions with 5 choices: {count_5_choices_train}")
-
-        print('====counts valid====')
-        print(f"Total number of validation examples: {total_valid}")
-        print(f"Number of validation questions with 3 choices: {count_3_choices_valid}")
-        print(f"Number of validation questions with 5 choices: {count_5_choices_valid}")
-
-        # Filter the examples in the training dataset
-        filtered_train = raw_datasets["train"].filter(lambda example: len(example['choices']['label']) == 4)
-
-        # Filter the examples in the validation dataset
-        filtered_valid = raw_datasets["validation"].filter(lambda example: len(example['choices']['label']) == 4)
-
-        # Filter the examples in the test dataset
-        filtered_test = raw_datasets["test"].filter(lambda example: len(example['choices']['label']) == 4)
-
-        # Replace the original datasets with the filtered datasets
-        raw_datasets["train"] = filtered_train
-        raw_datasets["validation"] = filtered_valid
-        raw_datasets["test"] = filtered_test
-
-        print('====counts train====')
-        print(f"Total number of training examples: {len(raw_datasets['train'])}")
-        print('====counts valid====')
-        print(f"Total number of validation examples: {len(raw_datasets['validation'])}")
-
-        
-
-        # Apply the conversion to the training, validation, and test datasets
-        raw_datasets["train"] = raw_datasets["train"].map(convert_choices_to_alpha)
-        raw_datasets["validation"] = raw_datasets["validation"].map(convert_choices_to_alpha)
-        raw_datasets["test"] = raw_datasets["test"].map(convert_choices_to_alpha)
-
-        print('====train data====')
-        from collections import Counter
-
-        # Initialize counters for training and validation datasets
-        counter_train = Counter()
-        counter_valid = Counter()
-
-        # Count in the training dataset
-        for example in raw_datasets["train"]:
-            counter_train.update(example['answerKey'])
-
-        # Count in the validation dataset
-        for example in raw_datasets["validation"]:
-            counter_valid.update(example['answerKey'])
-
-        # Print the results
-        print("Training dataset counts:")
-        for choice, count in counter_train.items():
-            print(f"Choice {choice}: {count} occurrences")
-
-        print("Validation dataset counts:")
-        for choice, count in counter_valid.items():
-            print(f"Choice {choice}: {count} occurrences")
-
-
+    raw_datasets,num_labels = download_data(args,args.cache_dir)
     # Load pretrained model and tokenizer
     #
     # In distributed training, the .from_pretrained methods guarantee that only one local process can concurrently
@@ -404,7 +318,7 @@ def main(load_step):
     if args.task_name in ['boolq']: #,'winogrande_m', 'winogrande_s']:
         tokenizer.add_eos_token = True
     
-    num_labels = len(np.unique(raw_datasets['train']['label']))
+    num_labels = num_labels
     logger.info(f" Number of labels detected = {num_labels}")
 
     is_regression = args.task_name.lower() == "stsb"
@@ -618,12 +532,12 @@ def main(load_step):
 
     if args.testing_set == 'val':
         prior_precision = la.optimize_prior_precision(method='marglik', n_steps=args.laplace_optim_step, lr=1e-1)
-        print(f'prior precision: {prior_precision}')    
+        logger.info(f'prior precision: {prior_precision}')    
     else:
         prior_precision = la.optimize_prior_precision(method='val_gd', val_loader=val_dataloader, n_steps=args.laplace_optim_step, lr=1e-1)
     
     torch.save(prior_precision, f'{laplace_output_dir}/prior_precision_{args.laplace_hessian}_{args.laplace_sub}_{args.laplace_prior}_{args.laplace_optim_step}.pt')
-    print('prior precision', prior_precision)
+    logger.info(f'prior precision: {prior_precision}')
 
 
 
@@ -681,10 +595,10 @@ def main(load_step):
 
     f_mu = torch.cat(f_mu_list, dim=0)
     f_var = torch.cat(f_var_list, dim=0)
-    print('f_mu shape', f_mu.shape)
-    print('f_var shape', f_var.shape)
-    print(f_mu)
-    print(f_var)
+    logger.info('f_mu shape', f_mu.shape)
+    logger.info('f_var shape', f_var.shape)
+    logger.info(f_mu)
+    logger.info(f_var)
     torch.save(f_mu, f'{laplace_output_dir}/f_mu_{args.laplace_hessian}_{args.laplace_sub}_{args.laplace_prior}_{args.laplace_optim_step}.pt')
     torch.save(f_var, f'{laplace_output_dir}/f_var_{args.laplace_hessian}_{args.laplace_sub}_{args.laplace_prior}_{args.laplace_optim_step}.pt')
 
@@ -723,6 +637,6 @@ def main(load_step):
 
 if __name__ == "__main__":
     #step_list = [0,*list(range(999, 4000 , 1000))]
-    step_list = [0,49087,98175,147263,196351,245439]
+    step_list = [0,2356,4713,7070,9427,11784]
     for load_step in step_list:
         main(load_step)
