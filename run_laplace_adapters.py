@@ -359,11 +359,11 @@ def main(args,load_step):
 
     if args.testing_set == 'test':
         ds = processed_dataset.train_test_split(test_size=0.5, seed=42, shuffle=False)
-        val_dataset, eval_dataset = ds["train"], ds["test"]
+        val_dataset, eval_dataset = ds["train"], ds["test"] # split valid into val and test 50% and 50%
     elif args.testing_set == 'train_val':
         ds = train_dataset.train_test_split(test_size=0.2, seed=42, shuffle=False)
-        train_dataset, val_dataset = ds["train"], ds["test"]
-        eval_dataset = processed_dataset
+        train_dataset, val_dataset = ds["train"], ds["test"] # split train into train and val 80 and 20
+        eval_dataset = processed_dataset # test set is valid split
     else:
         eval_dataset = processed_dataset
 
@@ -480,11 +480,17 @@ def main(args,load_step):
 
 
     print('----fitting Laplace-----')
-    la.fit(train_dataloader)
+    if args.task_name in ['mnli','qnli','qqp']:
+        la.fit(val_dataloader)
+    else:
+        la.fit(train_dataloader)
 
     if args.testing_set == 'val':
         prior_precision = la.optimize_prior_precision(method='marglik', n_steps=args.laplace_optim_step, lr=1e-1)
-        print(f'prior precision: {prior_precision}')    
+        print(f'prior precision: {prior_precision}')
+    elif args.testing_set == 'train_val':
+        prior_precision = la.optimize_prior_precision(method='marglik', n_steps=args.laplace_optim_step, lr=1e-1)
+        print(f'prior precision: {prior_precision}')
     else:
         prior_precision = la.optimize_prior_precision(method='val_gd', val_loader=val_dataloader, n_steps=args.laplace_optim_step, lr=1e-1)
     

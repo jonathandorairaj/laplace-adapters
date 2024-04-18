@@ -519,9 +519,16 @@ def main():
         num_training_steps=args.max_train_steps,
     )
 
-    model, optimizer, train_dataloader, eval_dataloader, lr_scheduler = accelerator.prepare(
-        model, optimizer, train_dataloader, eval_dataloader, lr_scheduler
-    )
+    # Prepare everything with our `accelerator`.
+    if args.testing_set == 'val':
+        model, optimizer, train_dataloader, eval_dataloader, lr_scheduler = accelerator.prepare(
+            model, optimizer, train_dataloader, eval_dataloader, lr_scheduler
+        )
+    else:
+        model, optimizer, train_dataloader, val_dataloader, eval_dataloader, lr_scheduler = accelerator.prepare(
+            model, optimizer, train_dataloader, val_dataloader, eval_dataloader, lr_scheduler
+        )
+    #model.eval()
 
     # We need to recalculate our total training steps as the size of the training dataloader may have changed
     logger.info(f" num_update_steps_per_epoch before recalculation = {num_update_steps_per_epoch}")
