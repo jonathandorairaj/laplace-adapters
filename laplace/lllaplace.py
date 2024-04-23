@@ -2,7 +2,7 @@ from copy import deepcopy
 import torch
 from torch.nn.utils import parameters_to_vector, vector_to_parameters
 
-from laplace.baselaplace import ParametricLaplace, FullLaplace, KronLaplace, DiagLaplace
+from laplace.baselaplace import ParametricLaplace, KronLaplace, DiagLaplace
 from laplace.utils import FeatureExtractor, Kron
 
 
@@ -61,13 +61,13 @@ class LLLaplace(ParametricLaplace):
                  prior_mean=0., temperature=1., enable_backprop=False, backend=None, last_layer_name=None,
                  backend_kwargs=None):
         self.H = None
+        self.enable_backprop = enable_backprop
         super().__init__(model, likelihood, sigma_noise=sigma_noise, prior_precision=1.,
                          prior_mean=0., temperature=temperature,
-                         enable_backprop=enable_backprop, backend=backend,
+                         backend=backend,
                          backend_kwargs=backend_kwargs)
         self.model = FeatureExtractor(
-            deepcopy(model), last_layer_name=last_layer_name,
-            enable_backprop=enable_backprop
+            deepcopy(model), last_layer_name=last_layer_name
         )
         if self.model.last_layer is None:
             self.mean = None
@@ -105,12 +105,21 @@ class LLLaplace(ParametricLaplace):
 
         if self.model.last_layer is None:
             # Save an example batch for when loading the serialized Laplace
-            self.X, _ = next(iter(train_loader))
+            batch = next(iter(train_loader))
+           
+            try:
+                batch = batch.to(self._device)
+            except:
+                batch = {k: v.to(self._device) for k, v in batch.items()}
+            self.X = batch
+            print(f'Self X is : {batch.keys()}')
             with torch.no_grad():
                 try:
-                    self.model.find_last_layer(self.X[:1].to(self._device))
+                    #self.X = {k: v[0].to(self._device) for k, v in batch.items() if k == 'input_ids'}
+                    #print(f'Self X is : {self.X}')
+                    self.model.find_last_layer(**batch.to(self._device))
                 except (TypeError, AttributeError):
-                    self.model.find_last_layer(self.X.to(self._device))
+                    self.model.find_last_layer(**batch.to(self._device))
             params = parameters_to_vector(self.model.last_layer.parameters()).detach()
             self.n_params = len(params)
             self.n_layers = len(list(self.model.last_layer.parameters()))
@@ -191,7 +200,7 @@ class LLLaplace(ParametricLaplace):
         self.n_layers = len(list(self.model.last_layer.parameters()))
 
 
-class FullLLLaplace(LLLaplace, FullLaplace):
+#class FullLLLaplace(LLLaplace, FullLaplace):
     """Last-layer Laplace approximation with full, i.e., dense, log likelihood Hessian approximation
     and hence posterior precision. Based on the chosen `backend` parameter, the full
     approximation can be, for example, a generalized Gauss-Newton matrix.
@@ -199,7 +208,7 @@ class FullLLLaplace(LLLaplace, FullLaplace):
     See `FullLaplace`, `LLLaplace`, and `BaseLaplace` for the full interface.
     """
     # key to map to correct subclass of BaseLaplace, (subset of weights, Hessian structure)
-    _key = ('last_layer', 'full')
+#    _key = ('last_layer', 'full')
 
 
 class KronLLLaplace(LLLaplace, KronLaplace):
@@ -222,7 +231,7 @@ class KronLLLaplace(LLLaplace, KronLaplace):
                  damping=False, **backend_kwargs):
         self.damping = damping
         super().__init__(model, likelihood, sigma_noise, prior_precision,
-                         prior_mean, temperature, enable_backprop, backend, last_layer_name, backend_kwargs)
+                         prior_mean, temperature, enable_backprop=False, backend=backend, last_layer_name=last_layer_name, **backend_kwargs)
 
     def _init_H(self):
         self.H = Kron.init_from_model(self.model.last_layer, self._device)

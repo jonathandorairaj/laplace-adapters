@@ -1,4 +1,5 @@
 from laplace.baselaplace import ParametricLaplace
+from laplace.lllaplace import LLLaplace,KronLLLaplace,DiagLLLaplace ## FullLaplace missing here and in src files
 from laplace import *
 
 

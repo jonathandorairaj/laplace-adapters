@@ -425,6 +425,8 @@ class ParametricLaplace(BaseLaplace):
             batch = {k: v.to(self._device) for k, v in batch.items()}
 
         with torch.no_grad():
+            print('FIT METHOD PARAMETRIC LAPLACE')
+            print(f'Batch Structure : {batch.keys()}')
             out = self.model(**batch)
             #out = out.logits
 
