@@ -336,13 +336,15 @@ def main(load_step):
     print('======')
     print(model)
 
-
-
-    for name, param in model.named_parameters():
+    
+   for name, param in model.named_parameters():
         param.requires_grad = False
         if 'lora' in name:
             if 'all' in args.laplace_sub:
                 param.requires_grad = True
+            elif 'last_layer' in args.laplace_sub:
+                if 'classifier' in name :
+                  param.requires_grad = True
 
     model.print_trainable_parameters()
 
