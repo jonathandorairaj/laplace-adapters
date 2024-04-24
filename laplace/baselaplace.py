@@ -54,7 +54,7 @@ class BaseLaplace:
         # Get a list of all trainable parameters
         trainable_parameters = []
         for name,p in self.model.named_parameters():
-            if p.requires_grad and 'modules_to_save' not in name:
+            if p.requires_grad:# and 'modules_to_save' not in name:
                 trainable_parameters.append(p)
         # trainable_parameters = [p for p in self.model.parameters() if p.requires_grad]
 
@@ -411,7 +411,7 @@ class ParametricLaplace(BaseLaplace):
         mean = []
         for name, param in self.model.named_parameters():
             # print(name, param.shape, param.requires_grad)
-            if param.requires_grad and 'modules_to_save' not in name:
+            if param.requires_grad:# and 'modules_to_save' not in name:
                 # print('appending')
                 mean.append(param.detach())
         self.mean = parameters_to_vector(mean).detach()

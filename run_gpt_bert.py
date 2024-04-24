@@ -583,6 +583,12 @@ def main():
     if args.testing_set != 'val':
         test_loader_list.append(val_dataloader)
         test_loader_names.append('val')
+
+    print('-------------Before Training loop ---------')
+    
+    for name, param in model.named_parameters():
+            if param.requires_grad:
+                print(f"{name}: {param.shape}")
         
     for epoch in range(starting_epoch, args.num_train_epochs):
         active_dataloader = train_dataloader

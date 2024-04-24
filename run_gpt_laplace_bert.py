@@ -329,24 +329,42 @@ def main(load_step):
 
     peft_config = PeftConfig.from_pretrained(output_dir)
     model = BertForSequenceClassification.from_pretrained(
-        peft_config.base_model_name_or_path, load_in_8bit=False,num_labels = num_labels
+        peft_config.base_model_name_or_path,num_labels = num_labels
     )
+    print('---------------f1------------')
+    for name, module in model.named_modules():
+        if 'lora' in name.lower(): 
+            logger.info(name)
     model = PeftModel.from_pretrained(model, output_dir)
+    print('--------------f2--------------')
+    for name, module in model.named_modules():
+        if 'lora' in name.lower():
+            logger.info(name)  
     model.print_trainable_parameters()
     print('======')
-    print(model)
+    #print(model)
 
-    
-   for name, param in model.named_parameters():
+    for name, param in model.named_parameters():
+            if param.requires_grad:
+                print(f"{name}: {param.shape}")
+
+    print('before changes according to args')
+
+    for name, param in model.named_parameters():
         param.requires_grad = False
-        if 'lora' in name:
+        if 'lora' in name.lower():
             if 'all' in args.laplace_sub:
                 param.requires_grad = True
             elif 'last_layer' in args.laplace_sub:
-                if 'classifier' in name :
-                  param.requires_grad = True
+                if 'classifier' and 'modules_to_save' in name:
+                    param.requires_grad = True
 
     model.print_trainable_parameters()
+
+    print('after changes according to args')
+    for name, param in model.named_parameters():
+        if param.requires_grad:
+            print(f"{name}: {param.shape}")
 
 
     padding = "max_length" if args.pad_to_max_length else False
@@ -400,14 +418,25 @@ def main(load_step):
 
     
     class CustomLMHead_lora(torch.nn.Module):
-        def __init__(self, original_lm_head):
+        def __init__(self, original_lm_head,id_list):
             super().__init__()
-            #self.id_list = id_list
+            self.id_list = id_list
+            print(self.id_list)
             
-            # Trim the lm_head linear weights
-            original_weight = original_lm_head.weight.clone()
+            if self.id_list is not None:
+              original_weight = original_lm_head.weight[id_list, :].clone()
+              self.linear = torch.nn.Linear(in_features=original_weight.shape[1], out_features=len(id_list), bias=False).to(accelerator.device)
+              original_lora_B_weight = original_lm_head.modules_to_save.default.lora_B["default"].weight[id_list,:].clone()
+              self.lora_B = torch.nn.Linear(in_features=original_lora_B_weight.shape[1], out_features=len(id_list), bias=False).to(accelerator.device)
+            else:
+              original_weight = original_lm_head.weight.clone()
+              self.linear = torch.nn.Linear(in_features=original_weight.shape[1], out_features=original_weight.shape[0], bias=False).to(accelerator.device)
+              original_lora_B_weight = original_lm_head.modules_to_save.default.lora_B["default"].weight.clone()
+              self.lora_B = torch.nn.Linear(in_features=original_lora_B_weight.shape[1], out_features=original_lora_B_weight.shape[0], bias=False).to(accelerator.device)
 
-            self.linear = torch.nn.Linear(in_features=original_weight.shape[1], out_features=original_weight.shape[0], bias=False).to(accelerator.device)
+            # Trim the lm_head linear weights
+            #original_weight = original_lm_head.weight.clone()
+            #self.linear = torch.nn.Linear(in_features=original_weight.shape[1], out_features=original_weight.shape[0], bias=False).to(accelerator.device)
             self.linear.weight.data = original_weight.to(torch.float32)
             self.linear.weight.requires_grad = False
 
@@ -420,7 +449,7 @@ def main(load_step):
             self.lora_A.weight.requires_grad = True
             
             # Trim the lora_B weights
-            original_lora_B_weight = original_lm_head.modules_to_save.default.lora_B["default"].weight.clone()
+            #original_lora_B_weight = original_lm_head.modules_to_save.default.lora_B["default"].weight.clone()
             self.lora_B = torch.nn.Linear(in_features=original_lora_B_weight.shape[1], out_features=original_lora_B_weight.shape[0], bias=False).to(accelerator.device)
             self.lora_B.weight.data = original_lora_B_weight.to(torch.float32)
             self.lora_B.weight.requires_grad = True
@@ -436,37 +465,55 @@ def main(load_step):
     class WrappedModel(torch.nn.Module):
         def __init__(self, model):
             super().__init__()
-
+            self.id_list = None
             if args.task_name == 'boolq':
                 self.id_list = [tokenizer.encode('False')[1], tokenizer.encode('True')[1]]
             elif args.task_name == 'openbookqa':
                 self.id_list = [tokenizer.encode('A')[1], tokenizer.encode('B')[1], tokenizer.encode('C')[1], tokenizer.encode('D')[1]]
             elif 'ARC' in args.task_name:
-                self.id_list = [tokenizer.encode('A')[1], tokenizer.encode('B')[1], tokenizer.encode('C')[1], tokenizer.encode('D')[1]]
+                self.id_list = [0, 1, 2, 3]
             elif 'winogrande' in args.task_name:
                 self.id_list = [tokenizer.encode('A')[1], tokenizer.encode('B')[1]]
+            
+            #print('-----------ID LIST-----------')
+            #print(self.id_list)
 
-            if args.lm_head:
-                original_lm_head = model.base_model.model.classifier
-                model.base_model.model.lm_head = CustomLMHead_lora(original_lm_head).to(accelerator.device) 
+            #if args.lm_head:
+                #original_lm_head = model.base_model.model.classifier
+                #model.base_model.model.lm_head = CustomLMHead_lora(original_lm_head,self.id_list).to(accelerator.device) 
             
             self.model = model
 
             model.print_trainable_parameters()
-            print(self.model)
+
 
 
         def forward(self, **kwargs):
             kwargs.pop('labels', None)
             output_dict = self.model(**kwargs)
             logits = output_dict['logits']
-            #if args.lm_head:
-            #    selected_logits = logits
-            #else:
-            #    selected_logits = logits[:, -1, self.id_list]
-            return logits.to(torch.float32)
+            if args.lm_head:
+                selected_logits = logits
+            else:
+                selected_logits = logits[:, -1, self.id_list]
+            return selected_logits.to(torch.float32)
         
     model = WrappedModel(model)
+
+    #for name, param in model.named_parameters():
+        #param.requires_grad = False
+        #if 'lora' in name.lower():
+            #if 'all' in args.laplace_sub:
+                #param.requires_grad = True
+            #elif 'last_layer' in args.laplace_sub:
+                #if 'lm_head' in name:
+                    #param.requires_grad = True
+
+    #model.print_trainable_parameters()
+
+    for name, param in model.named_parameters():
+        if param.requires_grad:
+            print(f"{name}: {param.shape}")
 
     print('====model====')
     # print(model.model.base_model.model.lm_head.linear.weight)
@@ -525,7 +572,7 @@ def main(load_step):
 
 
     la = Laplace(model, 'classification', prior_precision=1.,
-                    subset_of_weights='all',
+                    subset_of_weights=args.laplace_sub,
                     hessian_structure=args.laplace_hessian)
 
 
@@ -597,8 +644,8 @@ def main(load_step):
 
     f_mu = torch.cat(f_mu_list, dim=0)
     f_var = torch.cat(f_var_list, dim=0)
-    logger.info('f_mu shape', f_mu.shape)
-    logger.info('f_var shape', f_var.shape)
+    logger.info(f'f_mu shape : {f_mu.shape}')
+    logger.info(f'f_var shape :  {f_var.shape}')
     logger.info(f_mu)
     logger.info(f_var)
     torch.save(f_mu, f'{laplace_output_dir}/f_mu_{args.laplace_hessian}_{args.laplace_sub}_{args.laplace_prior}_{args.laplace_optim_step}.pt')
@@ -639,6 +686,6 @@ def main(load_step):
 
 if __name__ == "__main__":
     #step_list = [0,*list(range(999, 4000 , 1000))]
-    step_list = [0,2356,4713,7070,9427,11784]
+    step_list = [0,560,1121,1682,2243,2804]
     for load_step in step_list:
         main(load_step)
