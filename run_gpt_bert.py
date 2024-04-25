@@ -513,8 +513,11 @@ def main():
     checkpointing_steps = args.checkpointing_steps
     #if checkpointing_steps is not None and checkpointing_steps.isdigit():
         #checkpointing_steps = int(checkpointing_steps)
-    if checkpointing_steps is None:
-        checkpointing_steps = math.ceil(0.2*args.max_train_steps)
+    if args.checkpointing_steps is None:
+        checkpointing_steps = np.arange(0, args.max_train_steps+1, (0.2 * args.max_train_steps)).astype(int).tolist()
+
+        if checkpointing_steps[-1] != args.max_train_steps:
+          checkpointing_steps.append(args.max_train_steps)
         print(checkpointing_steps)
 
     # We need to initialize the trackers we use, and also store our configuration.
@@ -589,15 +592,20 @@ def main():
     for name, param in model.named_parameters():
             if param.requires_grad:
                 print(f"{name}: {param.shape}")
+    
+    step_list = []
         
     for epoch in range(starting_epoch, args.num_train_epochs):
         active_dataloader = train_dataloader
         for step, train_batch in enumerate(active_dataloader):
-
-            if isinstance(checkpointing_steps, int):
+            
+            if completed_steps in checkpointing_steps:
+                print(f'Step : {completed_steps}')
                 for test_loader, test_loader_name in zip(test_loader_list, test_loader_names):
-                    if (completed_steps+1) % checkpointing_steps == 0 or completed_steps == 0:
+                    if (completed_steps) % checkpointing_steps[1] == 0 or completed_steps == 0:
                         output_dir = f"step_{completed_steps}"
+                        step_list.append(completed_steps)
+                        print(step_list)
                         if args.output_dir is not None:
                             output_dir = os.path.join(args.output_dir, output_dir)
                         # accelerator.save_state(output_dir)
@@ -686,9 +694,14 @@ def main():
                         with open(output_path, "w+") as f:
                             json.dump(gpu_dict, f, indent=4)
 
+                        steps_file_path = os.path.join(args.output_dir, 'steps.json')
+                        with open(steps_file_path, 'w+') as f:
+                          json.dump(step_list, f, indent=4)
+
                         del output_dicts, all_results, output_dict, eval_metric, logits, probs, label, predictions, references, outputs
         
             if completed_steps > args.max_train_steps:
+                print(f'Break Step : {completed_steps}')
                 break
             
             model.train()

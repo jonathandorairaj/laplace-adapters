@@ -18,6 +18,7 @@ from torch.utils.data import DataLoader
 from tqdm.auto import tqdm
 
 from preprocessing import convert_choices_to_alpha,preprocess_function,download_data
+from memory import save_gpu_stats 
 
 import transformers
 from transformers import (
@@ -231,9 +232,13 @@ def parse_args():
 
     os.makedirs(args.output_dir, exist_ok=True)
 
-    # /content/cache/huggingface/metrics/accuracy/default/outputs_laplace/winogrande_s/google-bert/bert-base-uncased_lora_lmhead_16_0.1_5e-05_42/step_0
+    args.step_list = None
+    args.steps_file = os.path.join(args.output_dir, 'steps.json')
+    with open(args.steps_file, 'r') as f:
+        args.step_list = json.load(f)
+    
+    print(f'Step list is :{args.step_list}')
 
-    # /content/cache/huggingface/metrics/super_glue/boolq/outputs_laplace/boolq/google-bert/bert-base-uncased_lora_lmhead_16_0.1_5e-05_42/step_0
 
     # Sanity checks
     if args.task_name is None and args.train_file is None and args.validation_file is None:
@@ -253,7 +258,7 @@ def parse_args():
 
 
 def main(load_step):
-    args = parse_args()
+    #args = parse_args()
     args.load_step = load_step
     # Sending telemetry. Tracking the example usage helps us better allocate resources to maintain them. The
     # information sent is the one passed as arguments along with your Python/PyTorch versions.
@@ -651,6 +656,8 @@ def main(load_step):
     torch.save(f_mu, f'{laplace_output_dir}/f_mu_{args.laplace_hessian}_{args.laplace_sub}_{args.laplace_prior}_{args.laplace_optim_step}.pt')
     torch.save(f_var, f'{laplace_output_dir}/f_var_{args.laplace_hessian}_{args.laplace_sub}_{args.laplace_prior}_{args.laplace_optim_step}.pt')
 
+    gpu_dict = save_gpu_stats()
+
     output_path = os.path.join(output_dir, f'eval_res_la_{args.laplace_hessian}_{args.laplace_sub}_{args.laplace_prior}_{args.laplace_predict}_{args.laplace_optim_step}.json')
     print(f'writing outputs to \'{output_path}\'')
 
@@ -662,6 +669,10 @@ def main(load_step):
         for i, output_dict in enumerate(output_dicts):
             output_dict_str = json.dumps(output_dict)
             f.write(f'{output_dict_str}\n')
+    
+    output_path = os.path.join(output_dir, f'gpu_stats.json')
+    with open(output_path, "w+") as f:
+        json.dump(gpu_dict, f, indent=4)
 
     eval_metric = metric.compute()
 
@@ -685,7 +696,8 @@ def main(load_step):
 
 
 if __name__ == "__main__":
+    args = parse_args()
     #step_list = [0,*list(range(999, 4000 , 1000))]
-    step_list = [0,560,1121,1682,2243,2804]
+    step_list = args.step_list #[0,560,1121,1682,2243,2804]
     for load_step in step_list:
         main(load_step)

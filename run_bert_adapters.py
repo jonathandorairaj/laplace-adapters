@@ -544,7 +544,7 @@ def main():
     checkpointing_steps = args.checkpointing_steps
     #if checkpointing_steps is not None and checkpointing_steps.isdigit():
         #checkpointing_steps = int(checkpointing_steps)
-    if checkpointing_steps is None:
+    if args.checkpointing_steps is None:
         checkpointing_steps = math.ceil(0.2*args.max_train_steps)
         print(checkpointing_steps)
 
