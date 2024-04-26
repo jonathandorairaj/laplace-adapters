@@ -210,7 +210,8 @@ def parse_args():
         peft_method += args.testing_set
 
     os.makedirs(args.output_dir, exist_ok=True)
-    args_file_path = os.path.join(args.output_dir, 'args.json')
+    args_file_path = args.output_dir+f'/{args.task_name}/'
+    args_file_path = os.path.join(args_file_path, 'args.json')
     args_dict = vars(args)
     with open(args_file_path, 'w+') as f:
       json.dump(args_dict, f, indent=4)

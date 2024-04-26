@@ -333,11 +333,11 @@ def main():
     peft_config = LoraConfig(task_type="SEQ_CLS", inference_mode=False, r=args.lora_r, lora_alpha=args.lora_alpha, lora_dropout=args.lora_dropout, target_modules=target_modules)
     model = get_peft_model(model, peft_config)
     logger.info(model.print_trainable_parameters())
-    print(model)
+    #print(model)
 
-    for name, module in model.named_modules():
-        if 'lora' in name.lower():  # Adjust the condition based on your naming convention
-            logger.info(name)
+    #for name, module in model.named_modules():
+        #if 'lora' in name.lower():  # Adjust the condition based on your naming convention
+            #logger.info(name)
 
     padding = "max_length" if args.pad_to_max_length else False
 
@@ -514,7 +514,7 @@ def main():
     #if checkpointing_steps is not None and checkpointing_steps.isdigit():
         #checkpointing_steps = int(checkpointing_steps)
     if args.checkpointing_steps is None:
-        checkpointing_steps = np.arange(0, args.max_train_steps+1, (0.2 * args.max_train_steps)).astype(int).tolist()
+        checkpointing_steps = np.arange(0, args.max_train_steps, (0.2 * args.max_train_steps)).astype(int).tolist()
 
         if checkpointing_steps[-1] != args.max_train_steps:
           checkpointing_steps.append(args.max_train_steps)
@@ -589,9 +589,9 @@ def main():
 
     print('-------------Before Training loop ---------')
     
-    for name, param in model.named_parameters():
-            if param.requires_grad:
-                print(f"{name}: {param.shape}")
+    #for name, param in model.named_parameters():
+            #if param.requires_grad:
+                #print(f"{name}: {param.shape}")
     
     step_list = []
         
@@ -599,10 +599,10 @@ def main():
         active_dataloader = train_dataloader
         for step, train_batch in enumerate(active_dataloader):
             
-            if completed_steps in checkpointing_steps:
-                print(f'Step : {completed_steps}')
+            if completed_steps+1 in checkpointing_steps or completed_steps == 0:
+                #print(f'Step : {completed_steps}')
                 for test_loader, test_loader_name in zip(test_loader_list, test_loader_names):
-                    if (completed_steps) % checkpointing_steps[1] == 0 or completed_steps == 0:
+                    #if (completed_steps+1) % checkpointing_steps[1] == 0 or completed_steps == 0:
                         output_dir = f"step_{completed_steps}"
                         step_list.append(completed_steps)
                         print(step_list)
