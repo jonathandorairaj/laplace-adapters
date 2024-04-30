@@ -47,7 +47,7 @@ class BaseLaplace:
 
         self.model = model
         self._device = next(model.parameters()).device
-
+        print('INIT BaseLaplace')
         # self.n_params = len(parameters_to_vector(self.model.parameters()).detach())
         # self.n_layers = len(list(self.model.parameters()))
 
@@ -375,6 +375,7 @@ class ParametricLaplace(BaseLaplace):
 
     def __init__(self, model, likelihood, sigma_noise=1., prior_precision=None,
                  prior_mean=0., temperature=1., backend=None, backend_kwargs=None):
+        print('INIT Parametric Laplace')
         super().__init__(model, likelihood, sigma_noise, prior_precision,
                          prior_mean, temperature, backend, backend_kwargs)
         if not hasattr(self, 'H'):
@@ -800,6 +801,7 @@ class KronLaplace(ParametricLaplace):
                  prior_mean=0., temperature=1., backend=None, damping=False,
                  **backend_kwargs):
         self.damping = damping
+        print('INIT Kron Laplace')
         self.H_facs = None
         super().__init__(model, likelihood, sigma_noise, prior_precision,
                          prior_mean, temperature, backend, **backend_kwargs)
