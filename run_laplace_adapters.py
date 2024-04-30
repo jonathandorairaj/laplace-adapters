@@ -58,7 +58,8 @@ from adapters import (
 
 )
 
-from preprocessing import preprocess_function
+from preprocessing import convert_choices_to_alpha,preprocess_function,download_data
+from memory import save_gpu_stats 
 
 logger = get_logger(__name__)
 
@@ -250,7 +251,7 @@ def parse_args():
     return args
 
 
-def main(args,load_step):
+def main(load_step):
     #args = parse_args()
     args.load_step = load_step
     # Sending telemetry. Tracking the example usage helps us better allocate resources to maintain them. The
@@ -264,17 +265,24 @@ def main(args,load_step):
     step_dir = os.path.join(args.cache_dir, subfolder_name)
     os.makedirs(step_dir, exist_ok=True)
 
-    # Setup logging and seed outside of main if they don't change per iteration
+    # Initialize the accelerator once, if its configuration does not change
+    accelerator = Accelerator(log_with=args.report_to, project_dir=args.output_dir) if args.with_tracking else Accelerator()
+
+    log_file_path = os.path.join(args.output_dir, 'logfile.log')
+
     logging.basicConfig(
         format="%(asctime)s - %(levelname)s - %(name)s - %(message)s",
         datefmt="%m/%d/%Y %H:%M:%S",
         level=logging.INFO,
+        filename=log_file_path
     )
-    logger = logging.getLogger(__name__)
-    set_seed(args.seed)
+    console_handler = logging.StreamHandler()
+    console_handler.setLevel(logging.INFO)
+    formatter = logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")
+    console_handler.setFormatter(formatter)
 
-    # Initialize the accelerator once, if its configuration does not change
-    accelerator = Accelerator(log_with=args.report_to, project_dir=args.output_dir) if args.with_tracking else Accelerator()
+    logger = logging.getLogger(__name__)
+    logger.addHandler(console_handler)
 
     logger.info(accelerator.state)
     if accelerator.is_local_main_process:
@@ -284,21 +292,26 @@ def main(args,load_step):
         datasets.utils.logging.set_verbosity_error()
         transformers.utils.logging.set_verbosity_error()
 
+    if args.seed is not None:
+        set_seed(args.seed)
+
     # Handle the repository creation
     if accelerator.is_main_process:
         os.makedirs(args.output_dir, exist_ok=True)
     accelerator.wait_for_everyone()
 
-    if args.task_name in ['wnli', 'rte', 'mrpc', 'cola', 'sst2', 'qnli', 'qqp', 'mnli']:
-        raw_datasets = load_dataset("glue", args.task_name)
-    elif args.task_name in ['cb', 'wic', 'boolq']:
-        raw_datasets = load_dataset("super_glue", args.task_name)
-    elif 'ARC' in args.task_name:
-        raw_datasets = load_dataset('ai2_arc', args.task_name)
-    elif 'winogrande' in args.task_name:
-        raw_datasets = load_dataset('winogrande', args.task_name)
-    else:
-        raw_datasets = load_dataset(args.task_name)
+    cache_dir = "/content/cache/huggingface" 
+    os.makedirs(cache_dir, exist_ok=True)
+    os.environ["HF_HOME"] = cache_dir
+
+    raw_datasets,num_labels= download_data(args,cache_dir)
+
+    logger.info(f" Number of labels detected = {num_labels}")
+
+    is_regression = args.task_name.lower() == "stsb"
+    if 'stsb' in args.task_name:
+      num_labels = 1
+
 
     # Load pretrained model and tokenizer
     #
@@ -318,10 +331,10 @@ def main(args,load_step):
         args.model_name_or_path, load_in_8bit=False
     )
 
-    num_labels = 1 if args.task_name == 'stsb' else len(np.unique(raw_datasets['train']['label']))
-    logger.info(f" Number of labels detected = {num_labels}")
+    #num_labels = 1 if args.task_name == 'stsb' else len(np.unique(raw_datasets['train']['label']))
+    #logger.info(f" Number of labels detected = {num_labels}")
 
-    model.add_classification_head(args.task_name, num_labels=num_labels)
+    #model.add_classification_head(args.task_name, num_labels=num_labels)
 
     #config = DoubleSeqBnConfig()
 
@@ -334,6 +347,10 @@ def main(args,load_step):
     print('======')
     print(model)
 
+    #for name, module in model.named_modules():
+        #if adapter_name in name.lower(): 
+            #logger.info(name)
+
 
     # check make sure correct params are frozen 
     for name, param in model.named_parameters():
@@ -341,6 +358,15 @@ def main(args,load_step):
         if adapter_name in name:
             if 'all' in args.laplace_sub:
                 param.requires_grad = True
+            elif 'last_layer' in args.laplace_sub:
+                if 'heads' in name:
+                    param.requires_grad = True
+
+            
+    
+    for name, param in model.named_parameters():
+        if param.requires_grad: 
+            logger.info(f'{name}')
 
     # change to print summary of adapters training
     print(model.adapter_summary())
@@ -397,14 +423,14 @@ def main(args,load_step):
             def __init__(self, model):
                 super().__init__()
 
-                if args.task_name == 'boolq':
-                    self.id_list = [tokenizer.encode('False')[1], tokenizer.encode('True')[1]]
-                elif args.task_name == 'openbookqa':
-                    self.id_list = [tokenizer.encode('A')[1], tokenizer.encode('B')[1], tokenizer.encode('C')[1], tokenizer.encode('D')[1]]
-                elif 'ARC' in args.task_name:
-                    self.id_list = [tokenizer.encode('A')[1], tokenizer.encode('B')[1], tokenizer.encode('C')[1], tokenizer.encode('D')[1]]
-                elif 'winogrande' in args.task_name:
-                    self.id_list = [tokenizer.encode('A')[1], tokenizer.encode('B')[1]]
+                #if args.task_name == 'boolq':
+                   # self.id_list = [tokenizer.encode('False')[1], tokenizer.encode('True')[1]]
+                #elif args.task_name == 'openbookqa':
+                   # self.id_list = [tokenizer.encode('A')[1], tokenizer.encode('B')[1], tokenizer.encode('C')[1], tokenizer.encode('D')[1]]
+                #elif 'ARC' in args.task_name:
+                   # self.id_list = [tokenizer.encode('A')[1], tokenizer.encode('B')[1], tokenizer.encode('C')[1], tokenizer.encode('D')[1]]
+                #elif 'winogrande' in args.task_name:
+                    #self.id_list = [tokenizer.encode('A')[1], tokenizer.encode('B')[1]]
                 
                 self.model = model
                 print(self.model)
@@ -417,6 +443,10 @@ def main(args,load_step):
                 return logits.to(torch.float32)
           
     model = WrappedModel(model)
+
+    #logger.info(model.adapter_summary())
+
+    #model.print_trainable_parameters()
 
     print('====model====')
     # print(model.model.base_model.model.lm_head.linear.weight)
@@ -475,7 +505,7 @@ def main(args,load_step):
 
 
     la = Laplace(model, 'classification', prior_precision=1.,
-                    subset_of_weights='all',
+                    subset_of_weights=args.laplace_sub,
                     hessian_structure=args.laplace_hessian)
 
 
@@ -551,12 +581,14 @@ def main(args,load_step):
 
     f_mu = torch.cat(f_mu_list, dim=0)
     f_var = torch.cat(f_var_list, dim=0)
-    print('f_mu shape', f_mu.shape)
-    print('f_var shape', f_var.shape)
-    print(f_mu)
-    print(f_var)
+    logger.info(f'f_mu shape : {f_mu.shape}')
+    logger.info(f'f_var shape :  {f_var.shape}')
+    logger.info(f_mu)
+    logger.info(f_var)
     torch.save(f_mu, f'{laplace_output_dir}/f_mu_{args.laplace_hessian}_{args.laplace_sub}_{args.laplace_prior}_{args.laplace_optim_step}.pt')
     torch.save(f_var, f'{laplace_output_dir}/f_var_{args.laplace_hessian}_{args.laplace_sub}_{args.laplace_prior}_{args.laplace_optim_step}.pt')
+
+    gpu_dict = save_gpu_stats()
 
     output_path = os.path.join(output_dir, f'eval_res_la_{args.laplace_hessian}_{args.laplace_sub}_{args.laplace_prior}_{args.laplace_predict}_{args.laplace_optim_step}.json')
     print(f'writing outputs to \'{output_path}\'')
@@ -569,6 +601,10 @@ def main(args,load_step):
         for i, output_dict in enumerate(output_dicts):
             output_dict_str = json.dumps(output_dict)
             f.write(f'{output_dict_str}\n')
+    
+    output_path = os.path.join(output_dir, f'gpu_stats.json')
+    with open(output_path, "w+") as f:
+        json.dump(gpu_dict, f, indent=4)
 
     eval_metric = metric.compute()
 
@@ -597,4 +633,4 @@ if __name__ == "__main__":
     step_list = args.step_list
     #step_list = [0,8418,16837,25256,33675,42094]
     for load_step in step_list:
-        main(args,load_step)
+        main(load_step)

@@ -202,7 +202,7 @@ def parse_args():
         peft_method += args.testing_set
 
     
-    args.output_dir += f'/{args.task_name}/{args.model_name_or_path}_{peft_method}_{args.lora_alpha}_{args.lora_dropout}_{args.learning_rate}_{args.seed}'
+    args.output_dir += f'/{args.task_name}/{args.model_name_or_path}_{peft_method}_{args.lora_r}_{args.lora_alpha}_{args.lora_dropout}_{args.learning_rate}_{args.seed}'
 
     os.makedirs(args.output_dir, exist_ok=True)
 
@@ -480,9 +480,14 @@ def main():
         num_training_steps=args.max_train_steps,
     )
 
-    model, optimizer, train_dataloader, eval_dataloader, lr_scheduler = accelerator.prepare(
+    if args.testing_set == 'train_val':
+          model, optimizer, train_dataloader, eval_dataloader, val_dataloader,lr_scheduler = accelerator.prepare(
+        model, optimizer, train_dataloader, eval_dataloader, val_dataloader, lr_scheduler
+        )
+    else:
+          model, optimizer, train_dataloader, eval_dataloader, lr_scheduler = accelerator.prepare(
         model, optimizer, train_dataloader, eval_dataloader, lr_scheduler
-    )
+       )
 
     # We need to recalculate our total training steps as the size of the training dataloader may have changed
     logger.info(f" num_update_steps_per_epoch before recalculation = {num_update_steps_per_epoch}")
