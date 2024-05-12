@@ -31,7 +31,8 @@ from transformers import (
     default_data_collator,
     get_scheduler,
     LlamaForCausalLM, LlamaTokenizer,
-    BertForSequenceClassification
+    BertForSequenceClassification,
+    AutoModelForSequenceClassification
 )
 from transformers.utils import check_min_version, get_full_repo_name, send_example_telemetry
 from transformers.utils.versions import require_version
@@ -320,7 +321,7 @@ def main():
     if args.task_name in ['boolq']:  #,'winogrande_m', 'winogrande_s']:
         tokenizer.add_eos_token = True
     
-    model = BertForSequenceClassification.from_pretrained(
+    model = AutoModelForSequenceClassification.from_pretrained(
         args.model_name_or_path, load_in_8bit=False, num_labels = num_labels #True
     )
 
@@ -328,8 +329,11 @@ def main():
     
     target_modules=['query','value'] #['v_proj','q_proj']
     if args.lm_head:
-        target_modules.append('classifier')
-        #target_modules= ['classifier']
+        if 'roberta' in args.model_name_or_path:
+            target_modules.append('classifier.dense')
+            target_modules.append('classifier.out_proj')
+        elif 'bert' in args.model_name_or_path:
+            target_modules.append('classifier')
     peft_config = LoraConfig(task_type="SEQ_CLS", inference_mode=False, r=args.lora_r, lora_alpha=args.lora_alpha, lora_dropout=args.lora_dropout, target_modules=target_modules)
     model = get_peft_model(model, peft_config)
     logger.info(model.print_trainable_parameters())
