@@ -463,15 +463,15 @@ def main(load_step):
         def __init__(self, model):
             super().__init__()
             
-            if args.lm_head:
-                if 'roberta' in args.model_name_or_path:
-                    original_lm_head = model.base_model.model.classifier.dense
-                    model.base_model.model.lm_head.dense = CustomLMHead_lora(original_lm_head).to(accelerator.device)
-                    original_lm_head = model.base_model.model.classifier.out_proj
-                    model.base_model.model.lm_head.out_proj = CustomLMHead_lora(original_lm_head).to(accelerator.device)
-                elif 'bert' in args.model_name_or_path:
-                    original_lm_head = model.base_model.model.classifier
-                    model.base_model.model.lm_head = CustomLMHead_lora(original_lm_head).to(accelerator.device) 
+#            if args.lm_head:
+#                if 'roberta' in args.model_name_or_path:
+#                    original_lm_head = model.base_model.model.classifier.dense
+##                    model.base_model.model.lm_head.dense = CustomLMHead_lora(original_lm_head).to(accelerator.device)
+#                    original_lm_head = model.base_model.model.classifier.out_proj
+#                    model.base_model.model.lm_head.out_proj = CustomLMHead_lora(original_lm_head).to(accelerator.device)
+#                elif 'bert' in args.model_name_or_path:
+#                    original_lm_head = model.base_model.model.classifier
+#                    model.base_model.model.lm_head = CustomLMHead_lora(original_lm_head).to(accelerator.device) 
             
             self.model = model
 
@@ -566,7 +566,7 @@ def main(load_step):
     print('----fitting Laplace-----')
     la.fit(train_dataloader)
 
-    if args.testing_set == 'val':
+    if args.testing_set == 'train_val':
         prior_precision = la.optimize_prior_precision(method='marglik', n_steps=args.laplace_optim_step, lr=1e-1)
         logger.info(f'prior precision: {prior_precision}')    
     else:

@@ -327,21 +327,28 @@ def main():
 
 
     
-    target_modules=['query','value'] #['v_proj','q_proj']
-    if args.lm_head:
-        if 'roberta' in args.model_name_or_path:
-            target_modules.append('classifier.dense')
-            target_modules.append('classifier.out_proj')
-        elif 'bert' in args.model_name_or_path:
-            target_modules.append('classifier')
+    target_modules=['query','value'] 
+    #if args.lm_head:
+    #    if 'roberta' in args.model_name_or_path:
+    #        target_modules.append('classifier.dense')
+    #        target_modules.append('classifier.out_proj')
+    #    elif 'bert' in args.model_name_or_path:
+    #        target_modules.append('classifier')
     peft_config = LoraConfig(task_type="SEQ_CLS", inference_mode=False, r=args.lora_r, lora_alpha=args.lora_alpha, lora_dropout=args.lora_dropout, target_modules=target_modules)
     model = get_peft_model(model, peft_config)
     logger.info(model.print_trainable_parameters())
     #print(model)
 
     #for name, module in model.named_modules():
-        #if 'lora' in name.lower():  # Adjust the condition based on your naming convention
-            #logger.info(name)
+    #    if 'lora' in name.lower():  # Adjust the condition based on your naming convention
+    #        print(name)
+    
+    for name, param in model.named_parameters():
+        param.requires_grad = False
+        if 'lora' in name.lower():
+            param.requires_grad = True
+        if param.requires_grad:
+            print(name)
 
     padding = "max_length" if args.pad_to_max_length else False
 
@@ -598,9 +605,9 @@ def main():
 
     print('-------------Before Training loop ---------')
     
-    #for name, param in model.named_parameters():
-            #if param.requires_grad:
-                #print(f"{name}: {param.shape}")
+    for name, param in model.named_parameters():
+        if param.requires_grad:
+            print(f"{name}: {param.shape}")
     
     step_list = []
         
@@ -613,7 +620,8 @@ def main():
                 for test_loader, test_loader_name in zip(test_loader_list, test_loader_names):
                     #if (completed_steps+1) % checkpointing_steps[1] == 0 or completed_steps == 0:
                         output_dir = f"step_{completed_steps}"
-                        step_list.append(completed_steps)
+                        if completed_steps not in step_list:
+                            step_list.append(completed_steps)
                         print(step_list)
                         if args.output_dir is not None:
                             output_dir = os.path.join(args.output_dir, output_dir)
