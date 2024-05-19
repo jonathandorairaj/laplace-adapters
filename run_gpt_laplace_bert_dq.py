@@ -4,8 +4,7 @@ import logging
 import math
 import os
 import random
-from pathlib import Path
-import numpy as np
+
 import datasets
 import evaluate
 import torch
@@ -13,12 +12,8 @@ from accelerate import Accelerator
 from accelerate.logging import get_logger
 from accelerate.utils import set_seed
 from datasets import load_dataset
-from huggingface_hub import Repository, create_repo
 from torch.utils.data import DataLoader
 from tqdm.auto import tqdm
-
-from preprocessing import convert_choices_to_alpha,preprocess_function,download_data
-from memory import save_gpu_stats 
 
 import transformers
 from transformers import (
@@ -31,13 +26,10 @@ from transformers import (
     default_data_collator,
     get_scheduler,
     LlamaForCausalLM, LlamaTokenizer,
-    BertForSequenceClassification,
-    AutoModelForSequenceClassification
-
+    BertForSequenceClassification
 )
 
 from transformers.utils import check_min_version, get_full_repo_name, send_example_telemetry
-from transformers.utils.versions import require_version
 
 from peft import (
     get_peft_config,
@@ -53,11 +45,9 @@ from peft import (
 )
 
 from laplace import Laplace
-import pickle
-import dill
+
 
 logger = get_logger(__name__)
-
 
 
 def parse_args():
@@ -196,52 +186,41 @@ def parse_args():
     parser.add_argument("--laplace_predict", type=str, default='mc_corr', help='probit bridge bridge_norm mc_indep mc_corr')
     parser.add_argument("--lm_head", action="store_true", default=False)
     parser.add_argument("--cache_dir", type=str,
-        default="/content/cache/huggingface/metrics/",
-        help="custom cache directory for GLUE datasets"
+        default="/content/cache/huggingface/metrics/glue", help="custom cache directory for GLUE datasets"
     )
-    #parser.add_argument("--max_step", type=int, required=True, help="Maximum step value for the step list based on number of checkpoints saved.")
+    parser.add_argument("--laplace_lr", type=float,
+        default=1e-3
+    )
+    
 
     args = parser.parse_args()
 
     print(args)
 
     peft_method = 'lora'
+
     if args.lm_head:
         peft_method = 'lora_lmhead'
+    
     if args.testing_set != 'val':
         peft_method += args.testing_set
 
     os.makedirs(args.output_dir, exist_ok=True)
-    args_file_path = args.output_dir+f'/{args.task_name}/'
-    args_file_path = os.path.join(args_file_path, 'args.json')
+    args_file_path = os.path.join(args.output_dir, 'args.json')
     args_dict = vars(args)
+
     with open(args_file_path, 'w+') as f:
       json.dump(args_dict, f, indent=4)
 
-    args.output_dir += f'/{args.task_name}/{args.model_name_or_path}_{peft_method}_{args.lora_r}_{args.lora_alpha}_{args.lora_dropout}_{args.learning_rate}_{args.seed}'
-    args.laplace_output_dir = f'outputs_laplace/{args.task_name}/{args.model_name_or_path}_{peft_method}_{args.lora_alpha}_{args.lora_dropout}_{args.learning_rate}_{args.seed}/'
+    args.output_dir += f'/{args.task_name}/{args.model_name_or_path}_{peft_method}_{args.lora_alpha}_{args.lora_dropout}_{args.learning_rate}_{args.seed}_{args.max_length}'
+
+    args.laplace_output_dir = f'outputs_laplace/{args.task_name}/{args.model_name_or_path}_{peft_method}_{args.lora_alpha}_{args.lora_dropout}_{args.learning_rate}_{args.seed}_{args.max_length}/'
     
     # custom cache dir
-    if args.task_name in ['wnli', 'rte', 'mrpc', 'cola', 'sst2', 'qnli', 'qqp', 'mnli']:
-        args.cache_dir += f"/glue/{args.task_name}/outputs_laplace/{args.task_name}/{args.model_name_or_path}_{peft_method}_{args.lora_alpha}_{args.lora_dropout}_{args.learning_rate}_{args.seed}/"
-    elif args.task_name in ['cb', 'wic', 'boolq']:
-        args.cache_dir += f'super_glue/{args.task_name}/outputs_laplace/{args.task_name}/{args.model_name_or_path}_{peft_method}_{args.lora_alpha}_{args.lora_dropout}_{args.learning_rate}_{args.seed}/'
-    elif 'ARC' in args.task_name:
-        args.cache_dir += f'accuracy/default/outputs_laplace/{args.task_name}/{args.model_name_or_path}_{peft_method}_{args.lora_alpha}_{args.lora_dropout}_{args.learning_rate}_{args.seed}/'
-    elif 'winogrande' in args.task_name:
-        args.cache_dir += f'accuracy/default/outputs_laplace/{args.task_name}/{args.model_name_or_path}_{peft_method}_{args.lora_alpha}_{args.lora_dropout}_{args.learning_rate}_{args.seed}/'
-    
+    args.cache_dir = f"./{args.task_name}/outputs_laplace/{args.task_name}/{args.model_name_or_path}_{peft_method}_{args.lora_alpha}_{args.lora_dropout}_{args.learning_rate}_{args.seed}_{args.max_length}/"
     os.makedirs(args.cache_dir, exist_ok=True)
 
     os.makedirs(args.output_dir, exist_ok=True)
-
-    args.step_list = None
-    args.steps_file = os.path.join(args.output_dir, 'steps.json')
-    with open(args.steps_file, 'r') as f:
-        args.step_list = json.load(f)
-    
-    print(f'Step list is :{args.step_list}')
-
 
     # Sanity checks
     if args.task_name is None and args.train_file is None and args.validation_file is None:
@@ -272,8 +251,8 @@ def main(load_step):
 
     subfolder_name = f"step_{args.load_step}"
     step_dir = os.path.join(args.cache_dir, subfolder_name)
+    print(step_dir)
     os.makedirs(step_dir, exist_ok=True)
-
 
     # Initialize the accelerator. We will let the accelerator handle device placement for us in this example.
     # If we're using tracking, we also need to initialize it here and it will by default pick up all supported trackers
@@ -316,47 +295,140 @@ def main(load_step):
 
     # In distributed training, the load_dataset function guarantee that only one local process can concurrently
     # download the dataset.
-    raw_datasets,num_labels = download_data(args,args.cache_dir)
+    if args.task_name in ['wnli', 'rte', 'mrpc', 'cola', 'sst2', 'qnli', 'qqp', 'mnli']:
+        raw_datasets = load_dataset("glue", args.task_name, cache_dir='./pretrained/datasets')
+    elif args.task_name in ['cb', 'wic', 'boolq']:
+        raw_datasets = load_dataset("super_glue", args.task_name)
+    elif 'ARC' in args.task_name:
+        raw_datasets = load_dataset('ai2_arc', args.task_name)
+    elif 'winogrande' in args.task_name:
+        raw_datasets = load_dataset('winogrande', args.task_name)
+    else:
+        raw_datasets = load_dataset(args.task_name)
+
+    if 'ARC' in args.task_name or 'openbookqa' in args.task_name:
+        # Initialize counters
+        count_3_choices_train = 0
+        count_5_choices_train = 0
+        count_3_choices_valid = 0
+        count_5_choices_valid = 0
+
+        # Count in the training dataset
+        for example in raw_datasets["train"]:
+            if len(example['choices']['label']) == 3:
+                count_3_choices_train += 1
+            elif len(example['choices']['label']) == 5:
+                count_5_choices_train += 1
+
+        # Count in the validation dataset
+        for example in raw_datasets["validation"]:
+            if len(example['choices']['label']) == 3:
+                count_3_choices_valid += 1
+            elif len(example['choices']['label']) == 5:
+                count_5_choices_valid += 1
+
+        # Get total counts
+        total_train = len(raw_datasets["train"])
+        total_valid = len(raw_datasets["validation"])
+
+        # Print counts
+        print('====counts train====')
+        print(f"Total number of training examples: {total_train}")
+        print(f"Number of training questions with 3 choices: {count_3_choices_train}")
+        print(f"Number of training questions with 5 choices: {count_5_choices_train}")
+
+        print('====counts valid====')
+        print(f"Total number of validation examples: {total_valid}")
+        print(f"Number of validation questions with 3 choices: {count_3_choices_valid}")
+        print(f"Number of validation questions with 5 choices: {count_5_choices_valid}")
+
+        # Filter the examples in the training dataset
+        filtered_train = raw_datasets["train"].filter(lambda example: len(example['choices']['label']) == 4)
+
+        # Filter the examples in the validation dataset
+        filtered_valid = raw_datasets["validation"].filter(lambda example: len(example['choices']['label']) == 4)
+
+        # Filter the examples in the test dataset
+        filtered_test = raw_datasets["test"].filter(lambda example: len(example['choices']['label']) == 4)
+
+        # Replace the original datasets with the filtered datasets
+        raw_datasets["train"] = filtered_train
+        raw_datasets["validation"] = filtered_valid
+        raw_datasets["test"] = filtered_test
+
+        print('====counts train====')
+        print(f"Total number of training examples: {len(raw_datasets['train'])}")
+        print('====counts valid====')
+        print(f"Total number of validation examples: {len(raw_datasets['validation'])}")
+
+        def convert_choices_to_alpha(example):
+            # Define a mapping from numerical to alphabetical labels
+            mapping = {'1': 'A', '2': 'B', '3': 'C', '4': 'D'}
+
+            # Convert the 'label' field in 'choices'
+            example['choices']['label'] = [mapping.get(label, label) for label in example['choices']['label']]
+
+            # Convert the 'answerKey' field
+            example['answerKey'] = mapping.get(example['answerKey'], example['answerKey'])
+
+            example['choices']['text'] = [text if text.endswith('.') else text + '.' for text in example['choices']['text']]
+            example['choices']['text'] = [text[0].upper() + text[1:] if text else text for text in example['choices']['text']]
+
+            return example
+
+        # Apply the conversion to the training, validation, and test datasets
+        raw_datasets["train"] = raw_datasets["train"].map(convert_choices_to_alpha)
+        raw_datasets["validation"] = raw_datasets["validation"].map(convert_choices_to_alpha)
+        raw_datasets["test"] = raw_datasets["test"].map(convert_choices_to_alpha)
+
+        print('====train data====')
+        from collections import Counter
+
+        # Initialize counters for training and validation datasets
+        counter_train = Counter()
+        counter_valid = Counter()
+
+        # Count in the training dataset
+        for example in raw_datasets["train"]:
+            counter_train.update(example['answerKey'])
+
+        # Count in the validation dataset
+        for example in raw_datasets["validation"]:
+            counter_valid.update(example['answerKey'])
+
+        # Print the results
+        print("Training dataset counts:")
+        for choice, count in counter_train.items():
+            print(f"Choice {choice}: {count} occurrences")
+
+        print("Validation dataset counts:")
+        for choice, count in counter_valid.items():
+            print(f"Choice {choice}: {count} occurrences")
+
     # Load pretrained model and tokenizer
     #
     # In distributed training, the .from_pretrained methods guarantee that only one local process can concurrently
     # download model & vocab.
-    tokenizer = AutoTokenizer.from_pretrained(args.model_name_or_path, use_fast=not args.use_slow_tokenizer, padding_side='left', use_auth_token='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')
-    #tokenizer.pad_token = tokenizer.eos_token
-    if args.task_name in ['boolq']: #,'winogrande_m', 'winogrande_s']:
+    tokenizer = AutoTokenizer.from_pretrained(
+        args.model_name_or_path, use_fast=not args.use_slow_tokenizer, padding_side='left', use_auth_token='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'
+    )
+
+    if args.task_name in ['boolq']:
         tokenizer.add_eos_token = True
-    
-    num_labels = num_labels
-    logger.info(f" Number of labels detected = {num_labels}")
 
-    is_regression = args.task_name.lower() == "stsb"
-    if 'stsb' in args.task_name:
-      num_labels = 1
-    output_dir = args.output_dir + f'/step_{args.load_step}'
-
+    output_dir = args.output_dir + f'/step_{args.load_step}/'
+    print(args.output_dir)
 
     peft_config = PeftConfig.from_pretrained(output_dir)
-    model = AutoModelForSequenceClassification.from_pretrained(
-        peft_config.base_model_name_or_path,num_labels = num_labels
+    
+    model = BertForSequenceClassification.from_pretrained(
+        peft_config.base_model_name_or_path, load_in_8bit=False
     )
-    print('---------------f1------------')
-    for name, module in model.named_modules():
-        if 'lora' in name.lower(): 
-            logger.info(name)
     model = PeftModel.from_pretrained(model, output_dir)
-    print('--------------f2--------------')
-    for name, module in model.named_modules():
-        if 'lora' in name.lower():
-            logger.info(name)  
     model.print_trainable_parameters()
+    
     print('======')
-    #print(model)
-
-    for name, param in model.named_parameters():
-            if param.requires_grad:
-                print(f"{name}: {param.shape}")
-
-    print('before changes according to args')
+    print(model)
 
     for name, param in model.named_parameters():
         param.requires_grad = False
@@ -369,20 +441,65 @@ def main(load_step):
 
     model.print_trainable_parameters()
 
-    print('after changes according to args')
-    for name, param in model.named_parameters():
-        if param.requires_grad:
-            print(f"{name}: {param.shape}")
-
-
     padding = "max_length" if args.pad_to_max_length else False
+
+    def preprocess_function(examples):
+        if args.task_name == 'boolq':
+            texts = [f"Answer the question with only True or False: {question} Context: {passage}" for passage, question in zip(examples['passage'], examples['question'])]
+            result = tokenizer(texts, padding=padding, max_length=args.max_length, truncation=True)
+            result["labels"] = examples["label"]
+        elif 'openbookqa' in args.task_name:
+            choices_list = [' '.join(f'{label}. {text}' for label, text in zip(choices['label'], choices['text'])) for choices in examples['choices']]
+            texts = [f"Select one of the choices that answers the following question: {question} Choices: {choices} Answer:" for question, choices in zip(examples['question_stem'], choices_list)]
+            result = tokenizer(texts, padding=padding, max_length=args.max_length, truncation=True)
+            map_dict = {"A": 0, "B": 1, "C": 2, "D": 3, "1": 0, "2": 1, "3": 2, "4": 3}
+            result["labels"] = [map_dict[label] for label in examples["answerKey"]]
+        elif 'ARC' in args.task_name:
+            choices_list = [' '.join(f'{label}. {text}' for label, text in zip(choices['label'], choices['text'])) for choices in examples['choices']]
+            texts = [f"Select one of the choices that answers the following question: {question} Choices: {choices} Answer:" for question, choices in zip(examples['question'], choices_list)]
+            result = tokenizer(texts, padding=padding, max_length=args.max_length, truncation=True)
+            map_dict = {"A": 0, "B": 1, "C": 2, "D": 3, "1": 0, "2": 1, "3": 2, "4": 3}
+            result["labels"] = [map_dict[label] for label in examples["answerKey"]]
+        elif 'winogrande' in  args.task_name:
+            texts = [f"Select one of the choices that answers the following question: {question} Choices: A. {option1}. B {option2}. Answer:" for question, option1, option2 in zip(examples['sentence'], examples['option1'], examples['option2'])]
+            result = tokenizer(texts, padding=padding, max_length=args.max_length, truncation=True)
+            map_dict = {"1": 0, "2": 1, "":None}
+            result["labels"] = [map_dict[label] for label in examples["answer"]]
+        elif 'cola' in args.task_name:
+            result = tokenizer(examples["sentence"], max_length=args.max_length, truncation=True, return_overflowing_tokens=False)
+            result["labels"] = examples["label"]
+        elif 'mnli' in args.task_name:
+            result = tokenizer(examples["premise"], examples["hypothesis"], truncation=True, padding=padding, max_length=args.max_length)
+            result["labels"] = examples["label"]
+        elif 'sst2' in args.task_name:
+            result = tokenizer(examples['sentence'], truncation=True, padding=padding, max_length=args.max_length)
+            result["labels"] = examples["label"]
+        elif 'stsb' in args.task_name:
+            result = tokenizer(examples["sentence1"], examples["sentence2"],max_length = args.max_length,truncation=True,return_overflowing_tokens=False)
+            result["labels"] = examples["label"]
+        elif 'qnli' in args.task_name:
+            result = tokenizer(examples["question"], examples["sentence"],max_length = args.max_length,truncation=True,return_overflowing_tokens=False)
+            result["labels"] = examples["label"]
+        elif 'qqp' in args.task_name:
+            result = tokenizer(examples['question1'], examples['question2'], truncation=True, padding=padding, max_length=args.max_length)
+            result["labels"] = examples["label"]
+        elif 'rte' in args.task_name:
+            result = tokenizer(examples['sentence1'], examples['sentence2'], truncation=True, padding=padding, max_length=args.max_length)
+            result["labels"] = examples["label"]
+        elif 'wnli' in args.task_name:
+            result = tokenizer(examples['sentence1'], examples['sentence2'], truncation=True, padding=padding, max_length=args.max_length)
+            result["labels"] = examples["label"]
+        elif 'mrpc' in args.task_name:
+            result = tokenizer(examples["sentence1"], examples["sentence2"], truncation=True,padding=padding, max_length=args.max_length)
+            result["labels"] = examples["label"]
+        return result
 
     with accelerator.main_process_first():
         processed_datasets = raw_datasets.map(
-        lambda examples: preprocess_function(examples,tokenizer,args,padding),
-        batched=True,
-        remove_columns=raw_datasets["train"].column_names,
-        desc="Running tokenizer on dataset",
+            preprocess_function,
+            batched=True,
+            remove_columns=raw_datasets["train"].column_names,
+            desc="Running tokenizer on dataset",
         )
 
     train_dataset = processed_datasets["train"]
@@ -424,15 +541,14 @@ def main(load_step):
     if args.testing_set != 'val':
         val_dataloader = DataLoader(val_dataset, shuffle=False, collate_fn=data_collator, batch_size=args.per_device_eval_batch_size)
 
-    
     class CustomLMHead_lora(torch.nn.Module):
         def __init__(self, original_lm_head):
             super().__init__()
             #self.id_list = id_list
-            #print(self.id_list)
-
+            
             # Trim the lm_head linear weights
             original_weight = original_lm_head.weight.clone()
+
             self.linear = torch.nn.Linear(in_features=original_weight.shape[1], out_features=original_weight.shape[0], bias=False).to(accelerator.device)
             self.linear.weight.data = original_weight.to(torch.float32)
             self.linear.weight.requires_grad = False
@@ -458,49 +574,35 @@ def main(load_step):
             lora_out = self.lora_B(self.lora_A(self.lora_dropout(x[:, -1, :].to(torch.float32))))
             return linear_out + lora_out * self.scaling
 
-
     class WrappedModel(torch.nn.Module):
         def __init__(self, model):
             super().__init__()
-            
-#            if args.lm_head:
-#                if 'roberta' in args.model_name_or_path:
-#                    original_lm_head = model.base_model.model.classifier.dense
-##                    model.base_model.model.lm_head.dense = CustomLMHead_lora(original_lm_head).to(accelerator.device)
-#                    original_lm_head = model.base_model.model.classifier.out_proj
-#                    model.base_model.model.lm_head.out_proj = CustomLMHead_lora(original_lm_head).to(accelerator.device)
-#                elif 'bert' in args.model_name_or_path:
-#                    original_lm_head = model.base_model.model.classifier
-#                    model.base_model.model.lm_head = CustomLMHead_lora(original_lm_head).to(accelerator.device) 
+
+            if args.task_name == 'boolq':
+                self.id_list = [tokenizer.encode('False')[1], tokenizer.encode('True')[1]]
+            elif args.task_name == 'openbookqa':
+                self.id_list = [tokenizer.encode('A')[1], tokenizer.encode('B')[1], tokenizer.encode('C')[1], tokenizer.encode('D')[1]]
+            elif 'ARC' in args.task_name:
+                self.id_list = [tokenizer.encode('A')[1], tokenizer.encode('B')[1], tokenizer.encode('C')[1], tokenizer.encode('D')[1]]
+            elif 'winogrande' in args.task_name:
+                self.id_list = [tokenizer.encode('A')[1], tokenizer.encode('B')[1]]
+
+            if args.lm_head:
+                original_lm_head = model.base_model.model.classifier
+                model.base_model.model.lm_head = CustomLMHead_lora(original_lm_head).to(accelerator.device) 
             
             self.model = model
 
             model.print_trainable_parameters()
-
-
+            print(self.model)
 
         def forward(self, **kwargs):
             kwargs.pop('labels', None)
             output_dict = self.model(**kwargs)
             logits = output_dict['logits']
             return logits.to(torch.float32)
-        
+
     model = WrappedModel(model)
-
-    #for name, param in model.named_parameters():
-        #param.requires_grad = False
-        #if 'lora' in name.lower():
-            #if 'all' in args.laplace_sub:
-                #param.requires_grad = True
-            #elif 'last_layer' in args.laplace_sub:
-                #if 'lm_head' in name:
-                    #param.requires_grad = True
-
-    #model.print_trainable_parameters()
-
-    for name, param in model.named_parameters():
-        if param.requires_grad:
-            print(f"{name}: {param.shape}")
 
     print('====model====')
     # print(model.model.base_model.model.lm_head.linear.weight)
@@ -521,19 +623,16 @@ def main(load_step):
     optimizer = torch.optim.AdamW(optimizer_grouped_parameters, lr=args.learning_rate)
 
     # Scheduler and math around the number of training steps.
-    overrode_max_train_steps = False
     num_update_steps_per_epoch = math.ceil(len(train_dataloader) / args.gradient_accumulation_steps)
     if args.max_train_steps is None:
         args.max_train_steps = args.num_train_epochs * num_update_steps_per_epoch
-        overrode_max_train_steps = True
 
     lr_scheduler = get_scheduler(
         name=args.lr_scheduler_type,
         optimizer=optimizer,
         num_warmup_steps=args.num_warmup_steps,
-        num_training_steps=args.max_train_steps,
+        num_training_steps=args.max_train_steps
     )
-
 
     # Prepare everything with our `accelerator`.
     if args.testing_set == 'val':
@@ -544,12 +643,14 @@ def main(load_step):
         model, optimizer, train_dataloader, val_dataloader, eval_dataloader, lr_scheduler = accelerator.prepare(
             model, optimizer, train_dataloader, val_dataloader, eval_dataloader, lr_scheduler
         )
+
     model.eval()
 
     # Get the metric function
     if args.task_name is not None:
         if args.task_name in ['wnli', 'rte', 'mrpc', 'cola', 'sst2', 'qnli', 'qqp', 'mnli']:
-            metric = evaluate.load("glue", args.task_name, experiment_id=f"{laplace_output_dir}/prior_precision_{args.laplace_hessian}_{args.laplace_sub}_{args.laplace_prior}_{args.laplace_optim_step}")
+            metric = evaluate.load("glue", args.task_name, cache_dir='./pretrained/evaluate')
+            # metric = evaluate.load("glue", args.task_name, experiment_id=f"{laplace_output_dir}/prior_precision_{args.laplace_hessian}_{args.laplace_sub}_{args.laplace_prior}_{args.laplace_optim_step}")
         elif args.task_name in ['cb', 'wic', 'boolq']:
             metric = evaluate.load("super_glue", args.task_name, experiment_id=f"{laplace_output_dir}/prior_precision_{args.laplace_hessian}_{args.laplace_sub}_{args.laplace_prior}_{args.laplace_optim_step}")
         else:
@@ -557,37 +658,39 @@ def main(load_step):
     else:
         metric = evaluate.load("accuracy", experiment_id=f"{laplace_output_dir}/prior_precision_{args.laplace_hessian}_{args.laplace_sub}_{args.laplace_prior}_{args.laplace_optim_step}")
 
+    # print('----double checking-----')
 
-    la = Laplace(model, 'classification', prior_precision=0.01,
-                    subset_of_weights=args.laplace_sub,
-                    hessian_structure=args.laplace_hessian)
+    # for step, batch in tqdm(enumerate(eval_dataloader)):
+    #     with torch.no_grad():
+    #         outputs = model(**batch)
+    #     predictions = outputs.argmax(dim=-1)
+    #     predictions, references = accelerator.gather((predictions, batch["labels"]))
+    #     metric.add_batch(predictions=predictions, references=references)
 
+    # eval_metric = metric.compute()
+    # logger.info(f"{eval_metric}")
+
+    # print('----double checking-----')
+
+    la = Laplace(model, 'classification', prior_precision=0.01, subset_of_weights=args.laplace_sub, hessian_structure=args.laplace_hessian)
 
     print('----fitting Laplace-----')
     la.fit(train_dataloader)
 
-    if args.testing_set == 'train_val':
-        prior_precision = la.optimize_prior_precision(method='marglik', n_steps=args.laplace_optim_step, lr=1e-1)
-        #logger.info(f'prior precision: {prior_precision}')    
+    if args.testing_set == 'val':
+        prior_precision = la.optimize_prior_precision(method='marglik', n_steps=args.laplace_optim_step, lr=1e-1)  # lr=1e-1
     else:
         prior_precision = la.optimize_prior_precision(method='val_gd', val_loader=val_dataloader, n_steps=args.laplace_optim_step, lr=1e-1)
     
     torch.save(prior_precision, f'{laplace_output_dir}/prior_precision_{args.laplace_hessian}_{args.laplace_sub}_{args.laplace_prior}_{args.laplace_optim_step}.pt')
-    logger.info(f'prior precision: {prior_precision}')
-
-
+    print('prior precision', prior_precision)
 
     samples_seen = 0
     output_dicts = []
     f_mu_list = []
     f_var_list = []
 
-
-
     for step, batch in tqdm(enumerate(eval_dataloader)):
-        #subfolder_name = f"{args.model_name_or_path}_lora_{args.lora_alpha}_{args.lora_dropout}_{args.learning_rate}_{args.seed}/step_{step}"
-        #step_dir = os.path.join(base_dir, subfolder_name)
-        #os.makedirs(step_dir, exist_ok=True)
         with torch.no_grad():
             f_mu, f_var = la._glm_predictive_distribution(batch)
             f_mu_list.append(f_mu)
@@ -596,15 +699,16 @@ def main(load_step):
         samples = 100000
         f_mu = f_mu.expand(samples, -1, -1)
         f_var = f_var.expand(samples, -1, -1, -1)
+        # logits = f_mu + (torch.linalg.cholesky(f_var + torch.eye(f_var.shape[-1]).to(f_var.device)*1e-6).to(f_mu.dtype) @ torch.randn_like(f_mu).unsqueeze(-1).to(f_mu.dtype).to(accelerator.device)).squeeze(-1)
 
-        logits = f_mu + (torch.linalg.cholesky(f_var + torch.eye(f_var.shape[-1]).to(f_var.device)*1e-6).to(f_mu.dtype) @ torch.randn_like(f_mu).unsqueeze(-1).to(f_mu.dtype).to(accelerator.device)).squeeze(-1)
+        logits = f_mu + (torch.linalg.cholesky(f_var + torch.eye(f_var.shape[-1]).to(f_var.device)).to(f_mu.dtype) @ torch.randn_like(f_mu).unsqueeze(-1).to(f_mu.dtype).to(accelerator.device)).squeeze(-1)
         logits = torch.softmax(logits, dim=-1).mean(0)
         
         predictions = logits.argmax(dim=-1)
 
         logits = logits.detach()
         for j in range(logits.size(0)):
-            probs = logits[j]  # F.softmax(logits[j], -1) do softmax when evaluating for ECE/NLL
+            probs = logits[j]
             label = batch["labels"]
             output_dict = {
                 'index': args.per_device_eval_batch_size * step + j,
@@ -631,14 +735,12 @@ def main(load_step):
 
     f_mu = torch.cat(f_mu_list, dim=0)
     f_var = torch.cat(f_var_list, dim=0)
-    logger.info(f'f_mu shape : {f_mu.shape}')
-    logger.info(f'f_var shape :  {f_var.shape}')
-    logger.info(f_mu)
-    logger.info(f_var)
+    print('f_mu shape', f_mu.shape)
+    print('f_var shape', f_var.shape)
+    print(f_mu)
+    print(f_var)
     torch.save(f_mu, f'{laplace_output_dir}/f_mu_{args.laplace_hessian}_{args.laplace_sub}_{args.laplace_prior}_{args.laplace_optim_step}.pt')
     torch.save(f_var, f'{laplace_output_dir}/f_var_{args.laplace_hessian}_{args.laplace_sub}_{args.laplace_prior}_{args.laplace_optim_step}.pt')
-
-    gpu_dict = save_gpu_stats()
 
     output_path = os.path.join(output_dir, f'eval_res_la_{args.laplace_hessian}_{args.laplace_sub}_{args.laplace_prior}_{args.laplace_predict}_{args.laplace_optim_step}.json')
     print(f'writing outputs to \'{output_path}\'')
@@ -651,10 +753,6 @@ def main(load_step):
         for i, output_dict in enumerate(output_dicts):
             output_dict_str = json.dumps(output_dict)
             f.write(f'{output_dict_str}\n')
-    
-    output_path = os.path.join(output_dir, f'gpu_stats.json')
-    with open(output_path, "w+") as f:
-        json.dump(gpu_dict, f, indent=4)
 
     eval_metric = metric.compute()
 
@@ -666,7 +764,6 @@ def main(load_step):
     if os.path.isfile(all_results_path):
         os.remove(all_results_path)
 
-    
     # write to the all_results file
     with open(all_results_path, "w") as f:
         json.dump(all_results, f)
@@ -675,11 +772,9 @@ def main(load_step):
     torch.cuda.empty_cache()
 
 
-
-
 if __name__ == "__main__":
+    # main()
     args = parse_args()
-    #step_list = [0,*list(range(999, 4000 , 1000))]
-    step_list = args.step_list #[0,560,1121,1682,2243,2804]
+    step_list = [0, 689, 1379, 2069, 2759, 3449]
     for load_step in step_list:
         main(load_step)
