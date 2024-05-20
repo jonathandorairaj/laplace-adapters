@@ -7,7 +7,7 @@ import math
 import os
 import random
 from pathlib import Path
-
+import numpy as np
 import datasets
 import evaluate
 import torch
@@ -45,6 +45,8 @@ from peft import (
     PromptEncoderConfig,
 )
 
+import preprocessing
+from memory import save_gpu_stats 
 
 logger = get_logger(__name__)
 
@@ -136,7 +138,7 @@ def parse_args():
     parser.add_argument(
         "--num_warmup_steps", type=int, default=0, help="Number of steps for the warmup in the lr scheduler."
     )
-    parser.add_argument("--output_dir", type=str, default='./outputs', help="Where to store the final model.")
+    parser.add_argument("--output_dir", type=str, default='./outputs_dq', help="Where to store the final model.")
     parser.add_argument("--seed", type=int, default=0, help="A seed for reproducible training.")
     parser.add_argument("--push_to_hub", action="store_true", help="Whether or not to push the model to the Hub.")
     parser.add_argument(
@@ -236,12 +238,22 @@ def main():
         Accelerator(log_with=args.report_to, project_dir=args.output_dir) if args.with_tracking else Accelerator()
     )
     # Make one log on every process with the configuration for debugging.
+    log_file_path = os.path.join(args.output_dir, 'logfile.log')
+
     logging.basicConfig(
         format="%(asctime)s - %(levelname)s - %(name)s - %(message)s",
         datefmt="%m/%d/%Y %H:%M:%S",
         level=logging.INFO,
+        filename=log_file_path
     )
-    logger.info(accelerator.state, main_process_only=False)
+    console_handler = logging.StreamHandler()
+    console_handler.setLevel(logging.INFO)
+    formatter = logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")
+    console_handler.setFormatter(formatter)
+
+    logger = logging.getLogger(__name__)
+    logger.addHandler(console_handler)
+    #logger.info(accelerator.state, main_process_only=False)
     if accelerator.is_local_main_process:
         datasets.utils.logging.set_verbosity_warning()
         transformers.utils.logging.set_verbosity_info()
@@ -261,6 +273,7 @@ def main():
             else:
                 repo_name = args.hub_model_id
             create_repo(repo_name, exist_ok=True, token=args.hub_token)
+            repo = Repository(args.output_dir, clone_from=repo_name, token=args.hub_token)
 
             with open(os.path.join(args.output_dir, ".gitignore"), "w+") as gitignore:
                 if "step_*" not in gitignore:
@@ -270,6 +283,10 @@ def main():
         elif args.output_dir is not None:
             os.makedirs(args.output_dir, exist_ok=True)
     accelerator.wait_for_everyone()
+
+    cache_dir = "/content/cache/huggingface" 
+    os.makedirs(cache_dir, exist_ok=True)
+    os.environ["HF_HOME"] = cache_dir
 
     # Get the datasets: you can either provide your own CSV/JSON training and evaluation files (see below)
     # or specify a GLUE benchmark task (the dataset will be downloaded automatically from the datasets Hub).
@@ -283,144 +300,26 @@ def main():
 
     # In distributed training, the load_dataset function guarantee that only one local process can concurrently
     # download the dataset.
-    if args.task_name is not None:
-        # Downloading and loading a dataset from the hub.
-        if args.task_name in ['wnli', 'rte', 'mrpc', 'cola', 'sst2', 'qnli', 'qqp', 'mnli']:
-            # cache_dir = "/content/cache/huggingface"
-            # os.makedirs(cache_dir, exist_ok=True)
-            # os.environ["HF_HOME"] = cache_dir
-            raw_datasets = load_dataset("glue", args.task_name, cache_dir='./pretrained/datasets')
-            # task_output_dir = os.path.join(cache_dir, f"metrics/glue/{args.task_name}/outputs/{args.task_name}/{args.model_name_or_path}")
-            # os.makedirs(task_output_dir, exist_ok=True)
-            # print(task_output_dir)
-        elif args.task_name in ['cb', 'wic', 'boolq']:
-            raw_datasets = load_dataset("super_glue", args.task_name)
-        elif 'ARC' in args.task_name:
-            raw_datasets = load_dataset('ai2_arc', args.task_name)
-        elif 'winogrande' in args.task_name:
-            raw_datasets = load_dataset('winogrande', args.task_name)
-        else:
-            raw_datasets = load_dataset(args.task_name)
-    else:
-        # Loading the dataset from local csv or json file.
-        data_files = {}
-        if args.train_file is not None:
-            data_files["train"] = args.train_file
-        if args.validation_file is not None:
-            data_files["validation"] = args.validation_file
-        extension = (args.train_file if args.train_file is not None else args.validation_file).split(".")[-1]
-        raw_datasets = load_dataset(extension, data_files=data_files)
-
-    if 'ARC' in args.task_name or 'openbookqa' in args.task_name:
-        # Initialize counters
-        count_3_choices_train = 0
-        count_5_choices_train = 0
-        count_3_choices_valid = 0
-        count_5_choices_valid = 0
-
-        # Count in the training dataset
-        for example in raw_datasets["train"]:
-            if len(example['choices']['label']) == 3:
-                count_3_choices_train += 1
-            elif len(example['choices']['label']) == 5:
-                count_5_choices_train += 1
-
-        # Count in the validation dataset
-        for example in raw_datasets["validation"]:
-            if len(example['choices']['label']) == 3:
-                count_3_choices_valid += 1
-            elif len(example['choices']['label']) == 5:
-                count_5_choices_valid += 1
-
-        # Get total counts
-        total_train = len(raw_datasets["train"])
-        total_valid = len(raw_datasets["validation"])
-
-        # Print counts
-        print('====counts train====')
-        print(f"Total number of training examples: {total_train}")
-        print(f"Number of training questions with 3 choices: {count_3_choices_train}")
-        print(f"Number of training questions with 5 choices: {count_5_choices_train}")
-
-        print('====counts valid====')
-        print(f"Total number of validation examples: {total_valid}")
-        print(f"Number of validation questions with 3 choices: {count_3_choices_valid}")
-        print(f"Number of validation questions with 5 choices: {count_5_choices_valid}")
-
-        # Filter the examples in the training dataset
-        filtered_train = raw_datasets["train"].filter(lambda example: len(example['choices']['label']) == 4)
-
-        # Filter the examples in the validation dataset
-        filtered_valid = raw_datasets["validation"].filter(lambda example: len(example['choices']['label']) == 4)
-
-        # Filter the examples in the test dataset
-        filtered_test = raw_datasets["test"].filter(lambda example: len(example['choices']['label']) == 4)
-
-        # Replace the original datasets with the filtered datasets
-        raw_datasets["train"] = filtered_train
-        raw_datasets["validation"] = filtered_valid
-        raw_datasets["test"] = filtered_test
-
-        print('====counts train====')
-        print(f"Total number of training examples: {len(raw_datasets['train'])}")
-        print('====counts valid====')
-        print(f"Total number of validation examples: {len(raw_datasets['validation'])}")
-
-        def convert_choices_to_alpha(example):
-            # Define a mapping from numerical to alphabetical labels
-            mapping = {'1': 'A', '2': 'B', '3': 'C', '4': 'D'}
-
-            # Convert the 'label' field in 'choices'
-            example['choices']['label'] = [mapping.get(label, label) for label in example['choices']['label']]
-
-            # Convert the 'answerKey' field
-            example['answerKey'] = mapping.get(example['answerKey'], example['answerKey'])
-
-            example['choices']['text'] = [text if text.endswith('.') else text + '.' for text in example['choices']['text']]
-            example['choices']['text'] = [text[0].upper() + text[1:] if text else text for text in example['choices']['text']]
-
-            return example
-
-        # Apply the conversion to the training, validation, and test datasets
-        raw_datasets["train"] = raw_datasets["train"].map(convert_choices_to_alpha)
-        raw_datasets["validation"] = raw_datasets["validation"].map(convert_choices_to_alpha)
-        raw_datasets["test"] = raw_datasets["test"].map(convert_choices_to_alpha)
-
-        print('====train data====')
-        from collections import Counter
-
-        # Initialize counters for training and validation datasets
-        counter_train = Counter()
-        counter_valid = Counter()
-
-        # Count in the training dataset
-        for example in raw_datasets["train"]:
-            counter_train.update(example['answerKey'])
-
-        # Count in the validation dataset
-        for example in raw_datasets["validation"]:
-            counter_valid.update(example['answerKey'])
-
-        # Print the results
-        print("Training dataset counts:")
-        for choice, count in counter_train.items():
-            print(f"Choice {choice}: {count} occurrences")
-
-        print("Validation dataset counts:")
-        for choice, count in counter_valid.items():
-            print(f"Choice {choice}: {count} occurrences")
 
     # Load pretrained model and tokenizer
     #
     # In distributed training, the .from_pretrained methods guarantee that only one local process can concurrently
     # download model & vocab.
+
+    raw_datasets,num_labels= preprocessing.download_data(args,cache_dir)
+
+    logger.info(f" Number of labels detected = {num_labels}")
+
+    is_regression = args.task_name.lower() == "stsb"
+    if 'stsb' in args.task_name:
+      num_labels = 1
     tokenizer = AutoTokenizer.from_pretrained(args.model_name_or_path, use_fast=not args.use_slow_tokenizer, padding_side='left', use_auth_token='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')
 
     if args.task_name in ['boolq']:  #,'winogrande_m', 'winogrande_s']:
         tokenizer.add_eos_token = True
     
     model = BertForSequenceClassification.from_pretrained(
-        args.model_name_or_path, cache_dir='./pretrained/models', load_in_8bit=False #True
+        args.model_name_or_path, load_in_8bit=False #True
     )
 
     target_modules = ['query', 'value'] #['v_proj','q_proj']
@@ -445,65 +344,12 @@ def main():
 
     padding = "max_length" if args.pad_to_max_length else False
 
-    def preprocess_function(examples):
-        if args.task_name == 'boolq':
-            texts = [f"Answer the question with only True or False: {question} Context: {passage}" for passage, question in zip(examples['passage'], examples['question'])]
-            result = tokenizer(texts, padding=padding, max_length=args.max_length, truncation=True)
-            result["labels"] = examples["label"]
-        elif 'openbookqa' in args.task_name:
-            choices_list = [' '.join(f'{label}. {text}' for label, text in zip(choices['label'], choices['text'])) for choices in examples['choices']]
-            texts = [f"Select one of the choices that answers the following question: {question} Choices: {choices} Answer:" for question, choices in zip(examples['question_stem'], choices_list)]
-            result = tokenizer(texts, padding=padding, max_length=args.max_length, truncation=True)
-            map_dict = {"A": 0, "B": 1, "C": 2, "D": 3, "1": 0, "2": 1, "3": 2, "4": 3}
-            result["labels"] = [map_dict[label] for label in examples["answerKey"]]
-        elif 'ARC' in args.task_name:
-            choices_list = [' '.join(f'{label}. {text}' for label, text in zip(choices['label'], choices['text'])) for choices in examples['choices']]
-            texts = [f"Select one of the choices that answers the following question: {question} Choices: {choices} Answer:" for question, choices in zip(examples['question'], choices_list)]
-            result = tokenizer(texts, padding=padding, max_length=args.max_length, truncation=True)
-            map_dict = {"A": 0, "B": 1, "C": 2, "D": 3, "1": 0, "2": 1, "3": 2, "4": 3}
-            result["labels"] = [map_dict[label] for label in examples["answerKey"]]
-        elif 'winogrande' in  args.task_name:
-            texts = [f"Select one of the choices that answers the following question: {question} Choices: A. {option1}. B {option2}. Answer:" for question, option1, option2 in zip(examples['sentence'], examples['option1'], examples['option2'])]
-            result = tokenizer(texts, padding=padding, max_length=args.max_length, truncation=True)
-            map_dict = {"1": 0, "2": 1, "":None}
-            result["labels"] = [map_dict[label] for label in examples["answer"]]
-        elif 'cola' in args.task_name:
-            result = tokenizer(examples["sentence"], max_length=args.max_length, truncation=True, return_overflowing_tokens=False)
-            result["labels"] = examples["label"]
-        elif 'mnli' in args.task_name:
-            result = tokenizer(examples["premise"], examples["hypothesis"], truncation=True, padding=padding, max_length=args.max_length)
-        elif 'sst2' in args.task_name:
-            result = tokenizer(examples['sentence'], truncation=True, padding=padding, max_length=args.max_length)
-            result["labels"] = examples["label"]
-        elif 'stsb' in args.task_name:
-            result = tokenizer(examples["sentence1"], examples["sentence2"],max_length = args.max_length,truncation=True,return_overflowing_tokens=False)
-            result["labels"] = examples["label"]
-        elif 'qnli' in args.task_name:
-            result = tokenizer(examples["question"], examples["sentence"],max_length = args.max_length,truncation=True,return_overflowing_tokens=False)
-            result["labels"] = examples["label"]
-        elif 'qqp' in args.task_name:
-            result = tokenizer(examples['question1'], examples['question2'], truncation=True, padding=padding, max_length=args.max_length)
-            result["labels"] = examples["label"]
-        elif 'rte' in args.task_name:
-            result = tokenizer(examples['sentence1'], examples['sentence2'], truncation=True, padding=padding, max_length=args.max_length)
-            result["labels"] = examples["label"]
-        elif 'wnli' in args.task_name:
-            result = tokenizer(examples['sentence1'], examples['sentence2'], truncation=True, padding=padding, max_length=args.max_length)
-            result["labels"] = examples["label"]
-        elif 'mrpc' in args.task_name:
-            result = tokenizer(examples["sentence1"], examples["sentence2"], truncation=True,padding=padding, max_length=args.max_length)
-            result["labels"] = examples["label"]
-        else:
-            raise NotImplementedError
-        return result
-
-    with accelerator.main_process_first():
-        processed_datasets = raw_datasets.map(
-            preprocess_function,
-            batched=True,
-            remove_columns=raw_datasets["train"].column_names,
-            desc="Running tokenizer on dataset",
-        )
+    processed_datasets = raw_datasets.map(
+    lambda examples: preprocessing.preprocess_function(examples,tokenizer,args,padding),
+    batched=True,
+    remove_columns=raw_datasets["train"].column_names,
+    desc="Running tokenizer on dataset",
+    )
 
     # print('====train data====')
     train_dataset = processed_datasets["train"]
@@ -593,9 +439,14 @@ def main():
         num_training_steps=args.max_train_steps,
     )
 
-    model, optimizer, train_dataloader, eval_dataloader, lr_scheduler = accelerator.prepare(
+    if args.testing_set == 'train_val':
+          model, optimizer, train_dataloader, eval_dataloader, val_dataloader,lr_scheduler = accelerator.prepare(
+        model, optimizer, train_dataloader, eval_dataloader, val_dataloader, lr_scheduler
+        )
+    else:
+          model, optimizer, train_dataloader, eval_dataloader, lr_scheduler = accelerator.prepare(
         model, optimizer, train_dataloader, eval_dataloader, lr_scheduler
-    )
+       )
 
     # We need to recalculate our total training steps as the size of the training dataloader may have changed
     logger.info(f" num_update_steps_per_epoch before recalculation = {num_update_steps_per_epoch}")
@@ -626,9 +477,13 @@ def main():
     checkpointing_steps = args.checkpointing_steps
     #if checkpointing_steps is not None and checkpointing_steps.isdigit():
         #checkpointing_steps = int(checkpointing_steps)
-    if checkpointing_steps is None:
-        checkpointing_steps = math.ceil(0.2*args.max_train_steps)
+    if args.checkpointing_steps is None:
+        checkpointing_steps = np.arange(0, args.max_train_steps, (0.2 * args.max_train_steps)).astype(int).tolist()
+
+        if checkpointing_steps[-1] != args.max_train_steps:
+          checkpointing_steps.append(args.max_train_steps)
         print(checkpointing_steps)
+
 
     # We need to initialize the trackers we use, and also store our configuration.
     # The trackers initializes automatically on the main process.
@@ -697,6 +552,8 @@ def main():
     if args.testing_set != 'val':
         test_loader_list.append(val_dataloader)
         test_loader_names.append('val')
+    
+    step_list = []
         
     for epoch in range(starting_epoch, args.num_train_epochs):
         
@@ -708,8 +565,10 @@ def main():
                 for test_loader, test_loader_name in zip(test_loader_list, test_loader_names):
                     if (completed_steps+1) % checkpointing_steps == 0 or completed_steps == 0:
                         output_dir = f"step_{completed_steps}"
-                        if args.output_dir is not None:
-                            output_dir = os.path.join(args.output_dir, output_dir)
+                        if completed_steps not in step_list:
+                            step_list.append(completed_steps)
+                        print(step_list)
+                        output_dir = os.path.join(args.output_dir, output_dir)
 
                         model.eval()
                         samples_seen = 0
@@ -787,6 +646,10 @@ def main():
                             for i, output_dict in enumerate(output_dicts):
                                 output_dict_str = json.dumps(output_dict)
                                 f.write(f'{output_dict_str}\n')
+                        
+                        steps_file_path = os.path.join(args.output_dir, 'steps.json')
+                        with open(steps_file_path, 'w+') as f:
+                          json.dump(step_list, f, indent=4)
 
 
                         del output_dicts, all_results, output_dict, eval_metric, logits, probs, label, predictions, references, outputs

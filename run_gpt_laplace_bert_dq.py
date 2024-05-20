@@ -45,6 +45,8 @@ from peft import (
 )
 
 from laplace import Laplace
+from preprocessing import convert_choices_to_alpha,preprocess_function,download_data
+from memory import save_gpu_stats 
 
 
 logger = get_logger(__name__)
@@ -132,7 +134,7 @@ def parse_args():
     parser.add_argument(
         "--num_warmup_steps", type=int, default=0, help="Number of steps for the warmup in the lr scheduler."
     )
-    parser.add_argument("--output_dir", type=str, default='./outputs', help="Where to store the final model.")
+    parser.add_argument("--output_dir", type=str, default='./outputs_dq', help="Where to store the final model.")
     parser.add_argument("--peft_method", type=str, default=None)
     parser.add_argument("--seed", type=int, default=21, help="A seed for reproducible training.")
     parser.add_argument("--push_to_hub", action="store_true", help="Whether or not to push the model to the Hub.")
@@ -214,13 +216,20 @@ def parse_args():
 
     args.output_dir += f'/{args.task_name}/{args.model_name_or_path}_{peft_method}_{args.lora_alpha}_{args.lora_dropout}_{args.learning_rate}_{args.seed}_{args.max_length}'
 
-    args.laplace_output_dir = f'outputs_laplace/{args.task_name}/{args.model_name_or_path}_{peft_method}_{args.lora_alpha}_{args.lora_dropout}_{args.learning_rate}_{args.seed}_{args.max_length}/'
+    args.laplace_output_dir = f'outputs_laplace_dq/{args.task_name}/{args.model_name_or_path}_{peft_method}_{args.lora_alpha}_{args.lora_dropout}_{args.learning_rate}_{args.seed}_{args.max_length}/'
     
     # custom cache dir
-    args.cache_dir = f"./{args.task_name}/outputs_laplace/{args.task_name}/{args.model_name_or_path}_{peft_method}_{args.lora_alpha}_{args.lora_dropout}_{args.learning_rate}_{args.seed}_{args.max_length}/"
+    args.cache_dir = f"./{args.task_name}/outputs_laplace_dq/{args.task_name}/{args.model_name_or_path}_{peft_method}_{args.lora_alpha}_{args.lora_dropout}_{args.learning_rate}_{args.seed}_{args.max_length}/"
     os.makedirs(args.cache_dir, exist_ok=True)
 
     os.makedirs(args.output_dir, exist_ok=True)
+
+    args.step_list = None
+    args.steps_file = os.path.join(args.output_dir, 'steps.json')
+    with open(args.steps_file, 'r') as f:
+        args.step_list = json.load(f)
+    
+    print(f'Step list is :{args.step_list}')
 
     # Sanity checks
     if args.task_name is None and args.train_file is None and args.validation_file is None:
@@ -283,6 +292,8 @@ def main(load_step):
         os.makedirs(args.output_dir, exist_ok=True)
     accelerator.wait_for_everyone()
 
+    raw_datasets,num_labels = download_data(args,args.cache_dir)
+
     # Get the datasets: you can either provide your own CSV/JSON training and evaluation files (see below)
     # or specify a GLUE benchmark task (the dataset will be downloaded automatically from the datasets Hub).
 
@@ -295,115 +306,6 @@ def main(load_step):
 
     # In distributed training, the load_dataset function guarantee that only one local process can concurrently
     # download the dataset.
-    if args.task_name in ['wnli', 'rte', 'mrpc', 'cola', 'sst2', 'qnli', 'qqp', 'mnli']:
-        raw_datasets = load_dataset("glue", args.task_name, cache_dir='./pretrained/datasets')
-    elif args.task_name in ['cb', 'wic', 'boolq']:
-        raw_datasets = load_dataset("super_glue", args.task_name)
-    elif 'ARC' in args.task_name:
-        raw_datasets = load_dataset('ai2_arc', args.task_name)
-    elif 'winogrande' in args.task_name:
-        raw_datasets = load_dataset('winogrande', args.task_name)
-    else:
-        raw_datasets = load_dataset(args.task_name)
-
-    if 'ARC' in args.task_name or 'openbookqa' in args.task_name:
-        # Initialize counters
-        count_3_choices_train = 0
-        count_5_choices_train = 0
-        count_3_choices_valid = 0
-        count_5_choices_valid = 0
-
-        # Count in the training dataset
-        for example in raw_datasets["train"]:
-            if len(example['choices']['label']) == 3:
-                count_3_choices_train += 1
-            elif len(example['choices']['label']) == 5:
-                count_5_choices_train += 1
-
-        # Count in the validation dataset
-        for example in raw_datasets["validation"]:
-            if len(example['choices']['label']) == 3:
-                count_3_choices_valid += 1
-            elif len(example['choices']['label']) == 5:
-                count_5_choices_valid += 1
-
-        # Get total counts
-        total_train = len(raw_datasets["train"])
-        total_valid = len(raw_datasets["validation"])
-
-        # Print counts
-        print('====counts train====')
-        print(f"Total number of training examples: {total_train}")
-        print(f"Number of training questions with 3 choices: {count_3_choices_train}")
-        print(f"Number of training questions with 5 choices: {count_5_choices_train}")
-
-        print('====counts valid====')
-        print(f"Total number of validation examples: {total_valid}")
-        print(f"Number of validation questions with 3 choices: {count_3_choices_valid}")
-        print(f"Number of validation questions with 5 choices: {count_5_choices_valid}")
-
-        # Filter the examples in the training dataset
-        filtered_train = raw_datasets["train"].filter(lambda example: len(example['choices']['label']) == 4)
-
-        # Filter the examples in the validation dataset
-        filtered_valid = raw_datasets["validation"].filter(lambda example: len(example['choices']['label']) == 4)
-
-        # Filter the examples in the test dataset
-        filtered_test = raw_datasets["test"].filter(lambda example: len(example['choices']['label']) == 4)
-
-        # Replace the original datasets with the filtered datasets
-        raw_datasets["train"] = filtered_train
-        raw_datasets["validation"] = filtered_valid
-        raw_datasets["test"] = filtered_test
-
-        print('====counts train====')
-        print(f"Total number of training examples: {len(raw_datasets['train'])}")
-        print('====counts valid====')
-        print(f"Total number of validation examples: {len(raw_datasets['validation'])}")
-
-        def convert_choices_to_alpha(example):
-            # Define a mapping from numerical to alphabetical labels
-            mapping = {'1': 'A', '2': 'B', '3': 'C', '4': 'D'}
-
-            # Convert the 'label' field in 'choices'
-            example['choices']['label'] = [mapping.get(label, label) for label in example['choices']['label']]
-
-            # Convert the 'answerKey' field
-            example['answerKey'] = mapping.get(example['answerKey'], example['answerKey'])
-
-            example['choices']['text'] = [text if text.endswith('.') else text + '.' for text in example['choices']['text']]
-            example['choices']['text'] = [text[0].upper() + text[1:] if text else text for text in example['choices']['text']]
-
-            return example
-
-        # Apply the conversion to the training, validation, and test datasets
-        raw_datasets["train"] = raw_datasets["train"].map(convert_choices_to_alpha)
-        raw_datasets["validation"] = raw_datasets["validation"].map(convert_choices_to_alpha)
-        raw_datasets["test"] = raw_datasets["test"].map(convert_choices_to_alpha)
-
-        print('====train data====')
-        from collections import Counter
-
-        # Initialize counters for training and validation datasets
-        counter_train = Counter()
-        counter_valid = Counter()
-
-        # Count in the training dataset
-        for example in raw_datasets["train"]:
-            counter_train.update(example['answerKey'])
-
-        # Count in the validation dataset
-        for example in raw_datasets["validation"]:
-            counter_valid.update(example['answerKey'])
-
-        # Print the results
-        print("Training dataset counts:")
-        for choice, count in counter_train.items():
-            print(f"Choice {choice}: {count} occurrences")
-
-        print("Validation dataset counts:")
-        for choice, count in counter_valid.items():
-            print(f"Choice {choice}: {count} occurrences")
 
     # Load pretrained model and tokenizer
     #
@@ -587,9 +489,9 @@ def main(load_step):
             elif 'winogrande' in args.task_name:
                 self.id_list = [tokenizer.encode('A')[1], tokenizer.encode('B')[1]]
 
-            if args.lm_head:
-                original_lm_head = model.base_model.model.classifier
-                model.base_model.model.lm_head = CustomLMHead_lora(original_lm_head).to(accelerator.device) 
+            #if args.lm_head:
+                #original_lm_head = model.base_model.model.classifier
+                #model.base_model.model.lm_head = CustomLMHead_lora(original_lm_head).to(accelerator.device) 
             
             self.model = model
 
@@ -775,6 +677,7 @@ def main(load_step):
 if __name__ == "__main__":
     # main()
     args = parse_args()
-    step_list = [0, 689, 1379, 2069, 2759, 3449]
+    #step_list = [0, 91, 183, 275,367, 459]
+    step_list = args.step_list
     for load_step in step_list:
         main(load_step)
