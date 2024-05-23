@@ -166,7 +166,7 @@ def parse_args():
     parser.add_argument(
         "--checkpointing_steps",
         type=str,
-        default='1000',
+        default=None,
         help="Whether the various states should be saved at the end of every n steps, or 'epoch' for each epoch.",
     )
     parser.add_argument(
@@ -401,7 +401,7 @@ def main():
             "weight_decay": args.weight_decay,
         },
         {
-            "params": [p for n, p in model.named_parameters() if p.requires_grad any(nd in n for nd in no_decay)],
+            "params": [p for n, p in model.named_parameters() if p.requires_grad and any(nd in n for nd in no_decay)],
             "weight_decay": 0.0,
         },
     ]
@@ -529,7 +529,7 @@ def main():
         active_dataloader = train_dataloader
         for step, train_batch in enumerate(active_dataloader):
 
-              if (completed_steps+1) % checkpointing_steps == 0 or completed_steps == 0:
+              if (completed_steps+1) in checkpointing_steps or completed_steps == 0:
                   for test_loader, test_loader_name in zip(test_loader_list, test_loader_names):
 
                       if args.task_name is not None:
@@ -644,7 +644,7 @@ def main():
               model.train()
               outputs = model(**train_batch)
               y = train_batch['labels']
-              loss = torch.nn.CrossEntropyLoss()(outputs.logits, y) if is_regression else torch.nn.MSELoss()(outputs.logits, y)
+              loss = torch.nn.CrossEntropyLoss()(outputs.logits, y) if not is_regression else torch.nn.MSELoss()(outputs.logits, y)
               #loss = outputs.loss
               # We keep track of the loss at each epoch
               if args.with_tracking:

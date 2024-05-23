@@ -282,7 +282,7 @@ class BaseLaplace:
                 for j, f, t in zip(Js, f_mu, batch['labels']):
                     data_list.append((j.detach().cpu(), f.detach().cpu(), t))
 
-            batch_size = 8
+            batch_size = val_loader.batch_size
 
             log_prior_prec = self.prior_precision.log()
             log_prior_prec.requires_grad = True
@@ -412,7 +412,7 @@ class ParametricLaplace(BaseLaplace):
         mean = []
         for name, param in self.model.named_parameters():
             # print(name, param.shape, param.requires_grad)
-            if param.requires_grad:# and 'modules_to_save' not in name:
+            if param.requires_grad and 'modules_to_save' not in name:
                 # print('appending')
                 mean.append(param.detach())
         self.mean = parameters_to_vector(mean).detach()
@@ -697,6 +697,8 @@ class ParametricLaplace(BaseLaplace):
 
         if pred_type == 'glm':
             f_mu, f_var = self._glm_predictive_distribution(x)
+            print('f_mu shape', f_mu.shape)
+            print('f_var shape', f_var.shape)
             assert f_var.shape == torch.Size([f_mu.shape[0], f_mu.shape[1], f_mu.shape[1]])
             if diagonal_output:
                 f_var = torch.diagonal(f_var, dim1=1, dim2=2)
@@ -711,10 +713,11 @@ class ParametricLaplace(BaseLaplace):
     @torch.enable_grad()
     def _glm_predictive_distribution(self, batch):
         Js, f_mu = self.backend.jacobians(batch)
-        # print(Js, Js.shape)
-        # print('jacobian shape', Js.shape)
-        # print('f_mu shape', f_mu.shape)
+        #print(Js, Js.shape)
+        #print('jacobian shape', Js.shape)
+        #print('f_mu shape', f_mu.shape)
         f_var = self.functional_variance(Js)
+        #print('f_var shape', f_var.shape)
         return f_mu.detach(), f_var.detach()
 
     def _nn_predictive_samples(self, X, n_samples=100):

@@ -385,18 +385,27 @@ def main(load_step):
     model = PeftModel.from_pretrained(model, output_dir)
     model.print_trainable_parameters()
 
+    for name, param in model.named_parameters():
+        if param.requires_grad:
+            print(f"{name}: {param.shape}")
+
     if args.laplace_sub == 'all':
         for name, param in model.named_parameters():
+            param.requires_grad = False
             if 'lora' in name:
                 param.requires_grad = True
     else:    
         for name, param in model.named_parameters():
             param.requires_grad = False
-            if 'out_proj' in name:
+            if 'classifier' in name:
                 param.requires_grad = True
 
 
     model.print_trainable_parameters()
+
+    for name, param in model.named_parameters():
+        if param.requires_grad:
+            print(f"{name}: {param.shape}")
 
 
     padding = "max_length" if args.pad_to_max_length else False
@@ -508,11 +517,11 @@ def main(load_step):
     
     if args.laplace_prior == 'hetero':
         la = Laplace(model, 'classification',
-                        subset_of_weights='all',  #args.laplace_sub,
+                        subset_of_weights=args.laplace_sub,  #args.laplace_sub,
                         hessian_structure=args.laplace_hessian)
     elif args.laplace_prior == 'homo':
         la = Laplace(model, 'classification', prior_precision=1.,
-                        subset_of_weights='all',  #args.laplace_sub,
+                        subset_of_weights=args.laplace_sub,  #args.laplace_sub,
                         hessian_structure=args.laplace_hessian)
         
 
@@ -522,7 +531,7 @@ def main(load_step):
 
     # if args.load_step == 9999:
     if args.laplace_optim_step > 0:
-        if args.testing_set == 'val':
+        if args.testing_set == 'train_val':
             prior_precision = la.optimize_prior_precision(method='marglik', n_steps=args.laplace_optim_step, lr=1e-1)
         elif args.testing_set != 'val':
             prior_precision = la.optimize_prior_precision(method='val_gd', val_loader=val_dataloader, n_steps=args.laplace_optim_step, lr=1e-1)

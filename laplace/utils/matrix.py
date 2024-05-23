@@ -372,10 +372,12 @@ class KronDecomposed:
         # self @ W[batch, k, params]
         assert len(W.size()) == 3
         B, K, P = W.size()
+        #print( 'W shape',W.shape)
         W = W.reshape(B * K, P)
         cur_p = 0
         SW = list()
         for ls, Qs, delta in zip(self.eigenvalues, self.eigenvectors, self.deltas):
+            #print('len ls',len(ls))
             if len(ls) == 1:
                 Q, l, p = Qs[0], ls[0], len(ls[0])
                 ldelta_exp = torch.pow(l + delta, exponent).reshape(-1, 1)
@@ -399,6 +401,7 @@ class KronDecomposed:
                 cur_p += p
             else:
                 raise AttributeError('Shape mismatch')
+        #print('SW shape', len(SW))
         SW = torch.cat(SW, dim=1).reshape(B, K, P)
         return SW
 

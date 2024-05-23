@@ -343,12 +343,12 @@ def main():
     #    if 'lora' in name.lower():  # Adjust the condition based on your naming convention
     #        print(name)
     
-    for name, param in model.named_parameters():
-        param.requires_grad = False
-        if 'lora' in name.lower():
-            param.requires_grad = True
-        if param.requires_grad:
-            print(name)
+    #for name, param in model.named_parameters():
+        #param.requires_grad = False
+        #if 'lora' in name.lower():
+            #param.requires_grad = True
+        #if param.requires_grad:
+            #print(name)
 
     padding = "max_length" if args.pad_to_max_length else False
 
