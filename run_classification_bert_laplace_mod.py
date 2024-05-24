@@ -394,11 +394,17 @@ def main(load_step):
             param.requires_grad = False
             if 'lora' in name:
                 param.requires_grad = True
-    else:    
-        for name, param in model.named_parameters():
-            param.requires_grad = False
-            if 'classifier' in name:
-                param.requires_grad = True
+    elif args.laplace == 'last_layer':
+      if args.model_name_or_path == 'bert-base-uncased':    
+          for name, param in model.named_parameters():
+                param.requires_grad = False
+                if 'out_proj' in name:
+                    param.requires_grad = True
+      else:    
+          for name, param in model.named_parameters():
+                param.requires_grad = False
+                if 'out_proj' in name:
+                    param.requires_grad = True
 
 
     model.print_trainable_parameters()
