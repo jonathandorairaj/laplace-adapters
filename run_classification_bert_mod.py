@@ -8,6 +8,7 @@ import os
 import random
 from pathlib import Path
 import numpy as np
+import matplotlib.pyplot as plt
 import datasets
 import evaluate
 import torch
@@ -137,7 +138,7 @@ def parse_args():
     parser.add_argument(
         "--max_train_steps",
         type=int,
-        default=10000,
+        default=None,
         help="Total number of training steps to perform. If provided, overrides num_train_epochs.",
     )
     parser.add_argument(
@@ -251,12 +252,23 @@ def main():
         Accelerator(log_with=args.report_to, project_dir=args.output_dir) if args.with_tracking else Accelerator()
     )
     # Make one log on every process with the configuration for debugging.
+    log_file_path = os.path.join(args.output_dir, 'logfile.log')
+    # Make one log on every process with the configuration for debugging.
     logging.basicConfig(
         format="%(asctime)s - %(levelname)s - %(name)s - %(message)s",
         datefmt="%m/%d/%Y %H:%M:%S",
         level=logging.INFO,
+        filename = log_file_path
     )
-    logger.info(accelerator.state, main_process_only=False)
+    console_handler = logging.StreamHandler()
+    console_handler.setLevel(logging.INFO)
+    formatter = logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")
+    console_handler.setFormatter(formatter)
+
+    logger = logging.getLogger(__name__)
+    logger.addHandler(console_handler)
+    
+    #logger.info(accelerator.state, main_process_only=False)
     if accelerator.is_local_main_process:
         datasets.utils.logging.set_verbosity_warning()
         transformers.utils.logging.set_verbosity_info()
@@ -483,7 +495,7 @@ def main():
     logger.info(f"  Gradient Accumulation steps = {args.gradient_accumulation_steps}")
     logger.info(f"  Total optimization steps = {args.max_train_steps}")
     # Only show the progress bar once on each machine.
-    progress_bar = tqdm(range(args.max_train_steps), disable=not accelerator.is_local_main_process,mininterval = 1, maxinterval = 10)
+    progress_bar = tqdm(range(args.max_train_steps), disable=not accelerator.is_local_main_process,mininterval = 2, maxinterval = 10)
     completed_steps = 0
     starting_epoch = 0
     # Potentially load in the weights and states from a previous save
@@ -522,11 +534,14 @@ def main():
             print(f"{name}: {param.shape}")
 
     step_list = []
+    train_losses = []
+    val_losses = []
         
     # update the progress_bar if load from checkpoint
     progress_bar.update(completed_steps)
     for epoch in range(starting_epoch, args.num_train_epochs):
         active_dataloader = train_dataloader
+        total_train_loss = 0
         for step, train_batch in enumerate(active_dataloader):
 
               if (completed_steps+1) in checkpointing_steps or completed_steps == 0:
@@ -554,10 +569,14 @@ def main():
                       model.eval()
                       samples_seen = 0
                       output_dicts = []
-                      for step, batch in tqdm(enumerate(test_loader)):
+                      total_val_losses = 0
+                      for step, batch in tqdm(enumerate(test_loader),mininterval = 1,maxinterval=5):
                           with torch.no_grad():
                               outputs = model(**batch)
                           predictions = outputs.logits.argmax(dim=-1) if not is_regression else outputs.logits.squeeze()
+                          y = batch['labels']
+                          loss = torch.nn.CrossEntropyLoss()(outputs.logits, y) if not is_regression else torch.nn.MSELoss()(outputs.logits, y)
+                          total_val_losses += loss.detach().cpu().float()
 
                           logits = outputs.logits.detach()
                           for j in range(logits.size(0)):
@@ -588,6 +607,10 @@ def main():
 
                       eval_metric = metric.compute()
                       logger.info(f"epoch {epoch}: {eval_metric}")
+
+                      if test_loader_name == 'val':
+                          avg_val_loss = total_val_losses/ len(test_loader)
+                          val_losses.append(avg_val_loss)
 
                       if test_loader_name == 'eval':
                           accelerator.wait_for_everyone()
@@ -650,6 +673,7 @@ def main():
               if args.with_tracking:
                   total_loss += loss.detach().cpu().float()
               loss = loss / args.gradient_accumulation_steps
+              total_train_loss += loss.detach().cpu().float()
               #print(loss)
               accelerator.backward(loss)
               if step % args.gradient_accumulation_steps == 0 or step == len(train_dataloader) - 1:
@@ -658,7 +682,21 @@ def main():
                   optimizer.zero_grad()
                   progress_bar.update(1)
                   completed_steps += 1
-                
+
+        avg_train_loss = total_train_loss / len(active_dataloader)
+        #if (completed_steps+1) in checkpointing_steps or completed_steps == 0:
+        train_losses.append(avg_train_loss)
+
+    logger.info("***** Completed training *****")
+
+    save_path = os.path.join(args.output_dir, f'{args.task_name}_{args.model_name_or_path}_validation_loss.png')
+    #plt.plot(train_losses[::2], label='Train Loss')
+    plt.plot(val_losses, label='Validation Loss')
+    plt.xlabel('Epochs')
+    plt.ylabel('Loss')
+    plt.legend()
+    plt.savefig(save_path)
+    plt.show()         
                     
 
 

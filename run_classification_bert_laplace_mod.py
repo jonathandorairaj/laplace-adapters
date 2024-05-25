@@ -297,12 +297,22 @@ def main(load_step):
         Accelerator(log_with=args.report_to, project_dir=args.output_dir) if args.with_tracking else Accelerator()
     )
     # Make one log on every process with the configuration for debugging.
+    log_file_path = os.path.join(args.output_dir, f'logfile_la_{args.laplace_sub}.log')
     logging.basicConfig(
         format="%(asctime)s - %(levelname)s - %(name)s - %(message)s",
         datefmt="%m/%d/%Y %H:%M:%S",
         level=logging.INFO,
+        filename = log_file_path        
     )
-    logger.info(accelerator.state, main_process_only=False)
+    console_handler = logging.StreamHandler()
+    console_handler.setLevel(logging.INFO)
+    formatter = logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")
+    console_handler.setFormatter(formatter)
+
+    logger = logging.getLogger(__name__)
+    logger.addHandler(console_handler)
+    
+    #logger.info(accelerator.state, main_process_only=False)
     if accelerator.is_local_main_process:
         datasets.utils.logging.set_verbosity_warning()
         transformers.utils.logging.set_verbosity_info()
@@ -335,6 +345,7 @@ def main(load_step):
 
     raw_datasets,num_labels = download_data(args,args.cache_dir)
     
+    logger.info('***** Starting script *****')
 
     # Get the datasets: you can either provide your own CSV/JSON training and evaluation files (see below)
     # or specify a GLUE benchmark task (the dataset will be downloaded automatically from the datasets Hub).
@@ -394,11 +405,11 @@ def main(load_step):
             param.requires_grad = False
             if 'lora' in name:
                 param.requires_grad = True
-    elif args.laplace == 'last_layer':
+    elif args.laplace_sub == 'last_layer':
       if args.model_name_or_path == 'bert-base-uncased':    
           for name, param in model.named_parameters():
                 param.requires_grad = False
-                if 'out_proj' in name:
+                if 'classifier' in name:
                     param.requires_grad = True
       else:    
           for name, param in model.named_parameters():
@@ -530,7 +541,7 @@ def main(load_step):
                         subset_of_weights=args.laplace_sub,  #args.laplace_sub,
                         hessian_structure=args.laplace_hessian)
         
-
+    
     print('----fitting Laplace-----')
     la.fit(train_dataloader)
 
@@ -637,7 +648,7 @@ def main(load_step):
 
 
     del model, train_dataloader, output_dicts, metric, la, f_mu, f_var, f_mu_list, f_var_list, eval_dataloader, val_dataloader
-    
+    logger.info('***** Completed Script *****')
     torch.cuda.empty_cache()
 
 
