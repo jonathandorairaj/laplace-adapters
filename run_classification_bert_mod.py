@@ -66,6 +66,7 @@ task_to_keys = {
     "qnli": ("question", "sentence"),   # 104,743
     "qqp": ("question1", "question2"),  # 363,846
     "mnli": ("premise", "hypothesis"),  # 392,702
+    'stsb': ("sentence1", "sentence2"),
     # SuperGLUE
     "cb": ("premise", "hypothesis"),    # 250
     # "axb": ("premise", "hypothesis"),    # 1,459
@@ -494,6 +495,7 @@ def main():
     logger.info(f"  Total train batch size (w. parallel, distributed & accumulation) = {total_batch_size}")
     logger.info(f"  Gradient Accumulation steps = {args.gradient_accumulation_steps}")
     logger.info(f"  Total optimization steps = {args.max_train_steps}")
+
     # Only show the progress bar once on each machine.
     progress_bar = tqdm(range(args.max_train_steps), disable=not accelerator.is_local_main_process,mininterval = 2, maxinterval = 10)
     completed_steps = 0
@@ -548,7 +550,7 @@ def main():
                   for test_loader, test_loader_name in zip(test_loader_list, test_loader_names):
 
                       if args.task_name is not None:
-                          if args.task_name in ['wnli', 'rte', 'mrpc', 'cola', 'sst2', 'qnli', 'qqp', 'mnli']:
+                          if args.task_name in ['wnli', 'rte', 'mrpc', 'cola', 'sst2', 'qnli', 'qqp', 'mnli','stsb']:
                               metric = evaluate.load("glue", args.task_name, experiment_id=f"{args.output_dir}_step_{completed_steps }_{test_loader_name}")
                           elif args.task_name in ['cb', 'wic', 'boolq']:
                               metric = evaluate.load("super_glue", args.task_name, experiment_id=f"{args.output_dir}_step_{completed_steps }_{test_loader_name}")
@@ -575,7 +577,9 @@ def main():
                               outputs = model(**batch)
                           predictions = outputs.logits.argmax(dim=-1) if not is_regression else outputs.logits.squeeze()
                           y = batch['labels']
-                          loss = torch.nn.CrossEntropyLoss()(outputs.logits, y) if not is_regression else torch.nn.MSELoss()(outputs.logits, y)
+                          #logger.info(f' outputs shape : {predictions.shape}')
+                          #logger.info(f'y shape : {y.shape}')
+                          loss = torch.nn.CrossEntropyLoss()(outputs.logits, y) if not is_regression else torch.nn.MSELoss()(outputs.logits.squeeze(), y)
                           total_val_losses += loss.detach().cpu().float()
 
                           logits = outputs.logits.detach()
@@ -667,7 +671,9 @@ def main():
               model.train()
               outputs = model(**train_batch)
               y = train_batch['labels']
-              loss = torch.nn.CrossEntropyLoss()(outputs.logits, y) if not is_regression else torch.nn.MSELoss()(outputs.logits, y)
+              #logger.info(f' outputs shape : {outputs.shape}')
+              #logger.info(f'y shape : {y.shape}')
+              loss = torch.nn.CrossEntropyLoss()(outputs.logits, y) if not is_regression else torch.nn.MSELoss()(outputs.logits.squeeze(), y)
               #loss = outputs.loss
               # We keep track of the loss at each epoch
               if args.with_tracking:

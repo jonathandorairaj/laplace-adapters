@@ -283,6 +283,8 @@ class BaseLaplace:
                     data_list.append((j.detach().cpu(), f.detach().cpu(), t))
 
             batch_size = val_loader.batch_size
+            if batch_size is None:
+                batch_size = 32
 
             log_prior_prec = self.prior_precision.log()
             log_prior_prec.requires_grad = True

@@ -74,7 +74,7 @@ def convert_choices_to_alpha(example):
 def download_data(args,cache_dir):
     if args.task_name is not None:
         # Downloading and loading a dataset from the hub.
-        if args.task_name in ['wnli', 'rte', 'mrpc', 'cola', 'sst2', 'qnli', 'qqp', 'mnli']:
+        if args.task_name in ['wnli', 'rte', 'mrpc', 'cola', 'sst2', 'qnli', 'qqp', 'mnli','stsb']:
             raw_datasets = load_dataset("glue", args.task_name)
             task_output_dir = os.path.join(cache_dir, f"metrics/glue/{args.task_name}/outputs/{args.task_name}/{args.model_name_or_path}")
             num_labels = len(np.unique(raw_datasets['train']['label']))
