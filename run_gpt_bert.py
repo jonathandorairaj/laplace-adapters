@@ -203,7 +203,8 @@ def parse_args():
         peft_method += args.testing_set
 
     
-    args.output_dir += f'/{args.task_name}/{args.model_name_or_path}_{peft_method}_{args.lora_r}_{args.lora_alpha}_{args.lora_dropout}_{args.learning_rate}_{args.seed}'
+    args.output_dir += f'/{args.task_name}/{args.model_name_or_path}_{peft_method}_{args.lora_r}_{args.lora_alpha}_{args.lora_dropout}_{args.learning_rate}_{args.seed}_{args.per_device_train_batch_size}_{args.max_train_steps}'
+
 
     os.makedirs(args.output_dir, exist_ok=True)
 
@@ -535,6 +536,11 @@ def main():
         if checkpointing_steps[-1] != args.max_train_steps:
           checkpointing_steps.append(args.max_train_steps)
         print(checkpointing_steps)
+    else:
+        checkpointing_steps = args.checkpointing_steps
+        if checkpointing_steps is not None and checkpointing_steps.isdigit():
+            checkpointing_steps = int(checkpointing_steps)
+        print(checkpointing_steps)
 
     # We need to initialize the trackers we use, and also store our configuration.
     # The trackers initializes automatically on the main process.
@@ -615,10 +621,10 @@ def main():
         active_dataloader = train_dataloader
         for step, train_batch in enumerate(active_dataloader):
             
-            if completed_steps+1 in checkpointing_steps or completed_steps == 0:
+            if isinstance(checkpointing_steps, int):
                 #print(f'Step : {completed_steps}')
                 for test_loader, test_loader_name in zip(test_loader_list, test_loader_names):
-                    #if (completed_steps+1) % checkpointing_steps[1] == 0 or completed_steps == 0:
+                    if (completed_steps+1) % checkpointing_steps == 0 or completed_steps == 0:
                         output_dir = f"step_{completed_steps}"
                         if completed_steps not in step_list:
                             step_list.append(completed_steps)
