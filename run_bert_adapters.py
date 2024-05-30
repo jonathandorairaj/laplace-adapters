@@ -8,7 +8,7 @@ import math
 import random
 from pathlib import Path
 import numpy as np
-
+import matplotlib.pyplot as plt
 import datasets
 import evaluate
 import torch
@@ -209,7 +209,7 @@ def parse_args():
     if args.testing_set != 'val':
         peft_method += args.testing_set
 
-    args.output_dir += f'/{args.task_name}/{args.model_name_or_path}_{peft_method}_{args.learning_rate}_{args.seed}'
+    args.output_dir += f'/{args.task_name}/{args.model_name_or_path}_{peft_method}_{args.learning_rate}_{args.seed}_{args.per_device_train_batch_size}_{args.max_train_steps}'
 
     os.makedirs(args.output_dir, exist_ok=True)
 
@@ -304,33 +304,13 @@ def main():
             os.makedirs(args.output_dir, exist_ok=True)
     accelerator.wait_for_everyone()
 
-    if args.task_name is not None:
-        # Downloading and loading a dataset from the hub.
-        if args.task_name in ['wnli', 'rte', 'mrpc', 'cola', 'sst2', 'qnli', 'qqp', 'mnli','stsb']:
-            cache_dir = "/content/cache/huggingface"
-            os.makedirs(cache_dir, exist_ok=True)
-            os.environ["HF_HOME"] = cache_dir
-            raw_datasets = load_dataset("glue", args.task_name)
-            task_output_dir = os.path.join(cache_dir, f"metrics/glue/{args.task_name}/outputs/{args.task_name}/{args.model_name_or_path}")
-            os.makedirs(task_output_dir, exist_ok=True)
-            print(task_output_dir)
-        elif args.task_name in ['cb', 'wic', 'boolq']:
-            raw_datasets = load_dataset("super_glue", args.task_name)
-        elif 'ARC' in args.task_name:
-            raw_datasets = load_dataset('ai2_arc', args.task_name)
-        elif 'winogrande' in args.task_name:
-            raw_datasets = load_dataset('winogrande', args.task_name)
-        else:
-            raw_datasets = load_dataset(args.task_name)
-    else:
-        # Loading the dataset from local csv or json file.
-        data_files = {}
-        if args.train_file is not None:
-            data_files["train"] = args.train_file
-        if args.validation_file is not None:
-            data_files["validation"] = args.validation_file
-        extension = (args.train_file if args.train_file is not None else args.validation_file).split(".")[-1]
-        raw_datasets = load_dataset(extension, data_files=data_files)
+    cache_dir = "/content/cache/huggingface" 
+    os.makedirs(cache_dir, exist_ok=True)
+    os.environ["HF_HOME"] = cache_dir
+
+    raw_datasets,num_labels= preprocessing.download_data(args,cache_dir)
+
+    logger.info(f" Number of labels detected = {num_labels}")
 
     # Load pretrained model and tokenizer
     #
@@ -545,7 +525,15 @@ def main():
     #if checkpointing_steps is not None and checkpointing_steps.isdigit():
         #checkpointing_steps = int(checkpointing_steps)
     if args.checkpointing_steps is None:
-        checkpointing_steps = math.ceil(0.2*args.max_train_steps)
+        checkpointing_steps = np.arange(0, args.max_train_steps, (0.2 * args.max_train_steps)).astype(int).tolist()
+
+        if checkpointing_steps[-1] != args.max_train_steps:
+          checkpointing_steps.append(args.max_train_steps)
+        print(checkpointing_steps)
+    else:
+        checkpointing_steps = args.checkpointing_steps
+        if checkpointing_steps is not None and checkpointing_steps.isdigit():
+            checkpointing_steps = int(checkpointing_steps)
         print(checkpointing_steps)
 
     # We need to initialize the trackers we use, and also store our configuration.
@@ -619,16 +607,28 @@ def main():
       loss_func = torch.nn.MSELoss()  # Creating an instance of MSELoss
     else:
       loss_func = torch.nn.CrossEntropyLoss()  # This was correct already
-    #loss_func = torch.nn.MSELoss if 'stsb' in args.task_name else torch.nn.CrossEntropyLoss() 
+    #loss_func = torch.nn.MSELoss if 'stsb' in args.task_name else torch.nn.CrossEntropyLoss()
+
+    for name, param in model.named_parameters():
+        if param.requires_grad:
+            print(f"{name}: {param.shape}")
+    
+    step_list = []
+    train_losses = []
+    val_losses = [] 
         
     for epoch in range(starting_epoch, args.num_train_epochs):
         active_dataloader = train_dataloader
+        total_train_loss = 0
         for step, train_batch in enumerate(active_dataloader):
 
             if isinstance(checkpointing_steps, int):
                 for test_loader, test_loader_name in zip(test_loader_list, test_loader_names):
                     if (completed_steps+1) % checkpointing_steps == 0 or completed_steps == 0:
                         output_dir = f"step_{completed_steps}"
+                        if completed_steps not in step_list:
+                            step_list.append(completed_steps)
+                        print(step_list)
                         if args.output_dir is not None:
                             output_dir = os.path.join(args.output_dir, output_dir)
                         # accelerator.save_state(output_dir)
@@ -636,14 +636,16 @@ def main():
                         model.eval()
                         samples_seen = 0
                         output_dicts = []
-                        for step, batch in tqdm(enumerate(test_loader)):
+                        total_val_losses = 0
+                        for step, batch in tqdm(enumerate(test_loader),mininterval = 1,maxinterval=5):
                             with torch.no_grad():
                                 outputs = model(**batch)
-                            if is_regression:
-                              predictions = outputs.logits.squeeze(-1)  # Squeeze if necessary
-                            else:
-                              predictions = outputs.logits.argmax(dim=-1)
-                            #predictions = outputs.logits.argmax(dim=-1) #if not is_regression else outputs.logits.squeeze()
+                            predictions = outputs.logits.argmax(dim=-1) if not is_regression else outputs.logits.squeeze()
+                            y = batch['labels']
+                            #logger.info(f' outputs shape : {predictions.shape}')
+                            #logger.info(f'y shape : {y.shape}')
+                            loss = torch.nn.CrossEntropyLoss()(outputs.logits, y) if not is_regression else torch.nn.MSELoss()(outputs.logits.squeeze(), y)
+                            total_val_losses += loss.detach().cpu().float()
 
                             logits = outputs.logits.detach()
                             label = batch["labels"]
@@ -689,6 +691,10 @@ def main():
                         eval_metric = metric.compute()
                         logger.info(f"epoch {epoch}: {eval_metric}")
 
+                        if test_loader_name == 'val':
+                            avg_val_loss = total_val_losses/ len(test_loader)
+                            val_losses.append(avg_val_loss)
+
                         if test_loader_name == 'eval':
                             accelerator.wait_for_everyone()
                             # unwrapped_model = accelerator.unwrap_model(model).model
@@ -717,7 +723,7 @@ def main():
                             json.dump(all_results, f)
 
                         if test_loader_name == 'val':
-                            output_path = os.path.join(output_dir, f'eval_res_val.json')
+                            output_path = os.path.join(output_dir, f'val_res.json')
                         else:
                             output_path = os.path.join(output_dir, f'eval_res.json')
                         print(f'writing outputs to \'{output_path}\'')
@@ -735,6 +741,10 @@ def main():
                         with open(output_path, "w+") as f:
                             json.dump(gpu_dict, f, indent=4)
 
+                        steps_file_path = os.path.join(args.output_dir, 'steps.json')
+                        with open(steps_file_path, 'w+') as f:
+                          json.dump(step_list, f, indent=4)
+
                         del output_dicts, all_results, output_dict, eval_metric, logits, probs, label, predictions, references, outputs
         
             if completed_steps > args.max_train_steps:
@@ -743,16 +753,15 @@ def main():
             model.train()
             outputs = model(**train_batch)
             y = train_batch['labels']
-            if 'stsb' in args.task_name:
-              outputs.logits = outputs.logits.squeeze(-1)
             #logger.info(f'Y shape : {y.shape}')
-            loss = loss_func(outputs.logits, y)
+            loss = loss = torch.nn.CrossEntropyLoss()(outputs.logits, y) if not is_regression else torch.nn.MSELoss()(outputs.logits.squeeze(), y)
             #print(outputs.logits)
 
             # We keep track of the loss at each epoch
             if args.with_tracking:
                 total_loss += loss.detach().cpu().float()
             loss = loss / args.gradient_accumulation_steps
+            total_train_loss += loss.detach().cpu().float()
             accelerator.backward(loss)
 
             if step % args.gradient_accumulation_steps == 0 or step == len(train_dataloader) - 1:
@@ -763,6 +772,30 @@ def main():
                 completed_steps += 1
 
             del outputs, loss, y
+
+
+        avg_train_loss = total_train_loss / len(active_dataloader)
+        #if (completed_steps+1) in checkpointing_steps or completed_steps == 0:
+        train_losses.append(avg_train_loss)
+
+    logger.info("***** Completed training *****")
+
+    save_path = os.path.join(args.output_dir, f'{args.task_name}_{args.model_name_or_path}_validation_loss.png')
+    #plt.plot(train_losses[::2], label='Train Loss')
+    plt.plot(val_losses, label='Validation Loss')
+    plt.xlabel('Epochs')
+    plt.ylabel('Loss')
+    plt.legend()
+    plt.savefig(save_path)
+    plt.show()
+
+    save_path = os.path.join(args.output_dir, f'{args.task_name}_{args.model_name_or_path}_train_loss.png')
+    plt.plot(train_losses, label='train Loss')
+    plt.xlabel('Epochs')
+    plt.ylabel('Loss')
+    plt.legend()
+    plt.savefig(save_path)
+    plt.show()         
     
 
 

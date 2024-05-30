@@ -11,6 +11,7 @@ import numpy as np
 import datasets
 import evaluate
 import torch
+import matplotlib.pyplot as plt
 from accelerate import Accelerator
 from accelerate.logging import get_logger
 from accelerate.utils import set_seed
@@ -552,7 +553,7 @@ def main():
 
     # Get the metric function
     if args.task_name is not None:
-        if args.task_name in ['wnli', 'rte', 'mrpc', 'cola', 'sst2', 'qnli', 'qqp', 'mnli']:
+        if args.task_name in ['wnli', 'rte', 'mrpc', 'cola', 'sst2', 'qnli', 'qqp', 'mnli','stsb']:
             metric = evaluate.load("glue", args.task_name, experiment_id=f"{args.output_dir}")
         elif args.task_name in ['cb', 'wic', 'boolq']:
             metric = evaluate.load("super_glue", args.task_name, experiment_id=f"{args.output_dir}")
@@ -616,9 +617,12 @@ def main():
             print(f"{name}: {param.shape}")
     
     step_list = []
-        
+    train_losses = []
+    val_losses = []
+
     for epoch in range(starting_epoch, args.num_train_epochs):
         active_dataloader = train_dataloader
+        total_train_loss = 0
         for step, train_batch in enumerate(active_dataloader):
             
             if isinstance(checkpointing_steps, int):
@@ -631,15 +635,20 @@ def main():
                         print(step_list)
                         if args.output_dir is not None:
                             output_dir = os.path.join(args.output_dir, output_dir)
-                        # accelerator.save_state(output_dir)
 
                         model.eval()
                         samples_seen = 0
                         output_dicts = []
-                        for step, batch in tqdm(enumerate(test_loader)):
+                        total_val_losses = 0
+                        for step, batch in tqdm(enumerate(test_loader),mininterval = 1,maxinterval=5):
                             with torch.no_grad():
                                 outputs = model(**batch)
-                            predictions = outputs.logits.argmax(dim=-1) #if not is_regression else outputs.logits.squeeze()
+                            predictions = outputs.logits.argmax(dim=-1) if not is_regression else outputs.logits.squeeze()
+                            y = batch['labels']
+                            #logger.info(f' outputs shape : {predictions.shape}')
+                            #logger.info(f'y shape : {y.shape}')
+                            loss = torch.nn.CrossEntropyLoss()(outputs.logits, y) if not is_regression else torch.nn.MSELoss()(outputs.logits.squeeze(), y)
+                            total_val_losses += loss.detach().cpu().float()
 
                             logits = outputs.logits.detach()
                             for j in range(logits.size(0)):
@@ -671,37 +680,38 @@ def main():
                         eval_metric = metric.compute()
                         logger.info(f"epoch {epoch}: {eval_metric}")
 
+                        if test_loader_name == 'val':
+                            avg_val_loss = total_val_losses/ len(test_loader)
+                            val_losses.append(avg_val_loss)
+
                         if test_loader_name == 'eval':
                             accelerator.wait_for_everyone()
-                            # unwrapped_model = accelerator.unwrap_model(model).model
-                            #accelerator.unwrap_model(model).model.save_pretrained(
-                            #    output_dir, is_main_process=accelerator.is_main_process, save_function=accelerator.save
-                            #)
-                            model.save_pretrained(output_dir,
-                            save_function=accelerator.save  # Ensures compatibility with Accelerate's distributed file handling
+                            unwrapped_model = accelerator.unwrap_model(model)
+                            unwrapped_model.save_pretrained(
+                                output_dir, is_main_process=accelerator.is_main_process, save_function=accelerator.save
                             )
                             if accelerator.is_main_process:
                                 tokenizer.save_pretrained(output_dir)
-                            
-
+                    
                         all_results = {f"eval_{k}": v for k, v in eval_metric.items()}
 
                         gpu_dict = save_gpu_stats()
-
-                        if test_loader_name == 'val':
-                            all_results_output_path = os.path.join(output_dir, f"all_results_val.json")
-                        else:
+                        
+                        if test_loader_name == 'eval':
                             all_results_output_path = os.path.join(output_dir, f"all_results.json")
+                        elif test_loader_name == 'val':
+                            all_results_output_path = os.path.join(output_dir, f"all_results_val.json")
+
                         if os.path.isfile(all_results_output_path):
                             os.remove(all_results_output_path)
 
                         with open(all_results_output_path, "w") as f:
                             json.dump(all_results, f)
 
-                        if test_loader_name == 'val':
-                            output_path = os.path.join(output_dir, f'eval_res_val.json')
-                        else:
+                        if test_loader_name == 'eval':
                             output_path = os.path.join(output_dir, f'eval_res.json')
+                        elif test_loader_name == 'val':
+                            output_path = os.path.join(output_dir, f'val_res.json')
                         print(f'writing outputs to \'{output_path}\'')
 
                         if os.path.isfile(output_path):
@@ -720,32 +730,56 @@ def main():
                         steps_file_path = os.path.join(args.output_dir, 'steps.json')
                         with open(steps_file_path, 'w+') as f:
                           json.dump(step_list, f, indent=4)
-
+                        
                         del output_dicts, all_results, output_dict, eval_metric, logits, probs, label, predictions, references, outputs
-        
-            if completed_steps > args.max_train_steps:
-                print(f'Break Step : {completed_steps}')
-                break
-            
-            model.train()
-            outputs = model(**train_batch)
-            y = train_batch['labels']
-            loss = torch.nn.CrossEntropyLoss()(outputs.logits, y)
+              
+                if completed_steps > args.max_train_steps:
+                  break
 
-            # We keep track of the loss at each epoch
-            if args.with_tracking:
-                total_loss += loss.detach().cpu().float()
-            loss = loss / args.gradient_accumulation_steps
-            accelerator.backward(loss)
+                model.train()
+                outputs = model(**train_batch)
+                y = train_batch['labels']
+                #logger.info(f' outputs shape : {outputs.shape}')
+                #logger.info(f'y shape : {y.shape}')
+                loss = torch.nn.CrossEntropyLoss()(outputs.logits, y) if not is_regression else torch.nn.MSELoss()(outputs.logits.squeeze(), y)
+                #loss = outputs.loss
+                # We keep track of the loss at each epoch
+                if args.with_tracking:
+                    total_loss += loss.detach().cpu().float()
+                loss = loss / args.gradient_accumulation_steps
+                total_train_loss += loss.detach().cpu().float()
+                #print(loss)
+                accelerator.backward(loss)
+                if step % args.gradient_accumulation_steps == 0 or step == len(train_dataloader) - 1:
+                    optimizer.step()
+                    lr_scheduler.step()
+                    optimizer.zero_grad()
+                    progress_bar.update(1)
+                    completed_steps += 1
 
-            if step % args.gradient_accumulation_steps == 0 or step == len(train_dataloader) - 1:
-                optimizer.step()
-                lr_scheduler.step()
-                optimizer.zero_grad()
-                progress_bar.update(1)
-                completed_steps += 1
+        avg_train_loss = total_train_loss / len(active_dataloader)
+        #if (completed_steps+1) in checkpointing_steps or completed_steps == 0:
+        train_losses.append(avg_train_loss)
 
-            del outputs, loss, y
+    logger.info("***** Completed training *****")
+
+    save_path = os.path.join(args.output_dir, f'{args.task_name}_{args.model_name_or_path}_validation_loss.png')
+    #plt.plot(train_losses[::2], label='Train Loss')
+    plt.plot(val_losses, label='Validation Loss')
+    plt.xlabel('Epochs')
+    plt.ylabel('Loss')
+    plt.legend()
+    plt.savefig(save_path)
+    plt.show()
+
+    save_path = os.path.join(args.output_dir, f'{args.task_name}_{args.model_name_or_path}_train_loss.png')
+    plt.plot(train_losses, label='train Loss')
+    plt.xlabel('Epochs')
+    plt.ylabel('Loss')
+    plt.legend()
+    plt.savefig(save_path)
+    plt.show()         
+
     
 
 
