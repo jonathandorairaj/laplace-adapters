@@ -616,6 +616,8 @@ def main():
     step_list = []
     train_losses = []
     val_losses = [] 
+
+    print(model.adapter_summary())
         
     for epoch in range(starting_epoch, args.num_train_epochs):
         active_dataloader = train_dataloader

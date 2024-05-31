@@ -233,12 +233,12 @@ def parse_args():
     with open(args_file_path, 'w+') as f:
         json.dump(args_dict, f, indent=4)
 
-    args.output_dir += f'/{args.task_name}/{args.model_name_or_path}_{peft_method}_{args.lora_r}_{args.lora_alpha}_{args.lora_dropout}_{args.learning_rate}_{args.seed}'
-    args.laplace_output_dir = f'outputs_laplace/{args.task_name}/{args.model_name_or_path}_{peft_method}_{args.lora_alpha}_{args.lora_dropout}_{args.learning_rate}_{args.seed}/'
+    args.output_dir += f'/{args.task_name}/{args.model_name_or_path}_{peft_method}_{args.lora_r}_{args.lora_alpha}_{args.lora_dropout}_{args.learning_rate}_{args.seed}_{args.per_device_train_batch_size}_{args.max_train_steps}'
+    args.laplace_output_dir = f'outputs_laplace/{args.task_name}/{args.model_name_or_path}_{peft_method}_{args.lora_alpha}_{args.lora_dropout}_{args.learning_rate}_{args.seed}_{args.per_device_train_batch_size}_{args.max_train_steps}/'
 
     # custom cache dir
     if args.task_name in ['wnli', 'rte', 'mrpc', 'cola', 'sst2', 'qnli', 'qqp', 'mnli']:
-        args.cache_dir += f"/glue/{args.task_name}/outputs_laplace/{args.task_name}/{args.model_name_or_path}_{peft_method}_{args.lora_alpha}_{args.lora_dropout}_{args.learning_rate}_{args.seed}/"
+        args.cache_dir += f"/glue/{args.task_name}/outputs_laplace/{args.task_name}/{args.model_name_or_path}_{peft_method}_{args.lora_alpha}_{args.lora_dropout}_{args.learning_rate}_{args.seed}_{args.per_device_train_batch_size}_{args.max_train_steps}/"
     elif args.task_name in ['cb', 'wic', 'boolq']:
         args.cache_dir += f'super_glue/{args.task_name}/outputs_laplace/{args.task_name}/{args.model_name_or_path}_{peft_method}_{args.lora_alpha}_{args.lora_dropout}_{args.learning_rate}_{args.seed}/'
     elif 'ARC' in args.task_name:
@@ -251,9 +251,9 @@ def parse_args():
     os.makedirs(args.output_dir, exist_ok=True)
 
     args.step_list = None
-    args.steps_file = os.path.join(args.output_dir, 'steps.json')
-    with open(args.steps_file, 'r') as f:
-        args.step_list = json.load(f)
+    #args.steps_file = os.path.join(args.output_dir, 'steps.json')
+    #with open(args.steps_file, 'r') as f:
+        #args.step_list = json.load(f)
     
     print(f'Step list is :{args.step_list}')
 
@@ -654,6 +654,6 @@ def main(load_step):
 
 if __name__ == "__main__":
     args = parse_args()
-    step_list = args.step_list #[0,*list(range(999, 10999, 1000))]
+    step_list = [0,*list(range(1999, 10999, 2000))]
     for load_step in step_list:
         main(load_step)
