@@ -224,7 +224,7 @@ def parse_args():
     with open(args_file_path, 'w+') as f:
       json.dump(args_dict, f, indent=4)
 
-    args.output_dir += f'/{args.task_name}/{args.model_name_or_path}_{peft_method}_{args.learning_rate}_{args.seed}'
+    args.output_dir += f'/{args.task_name}/{args.model_name_or_path}_{peft_method}_{args.learning_rate}_{args.seed}_{args.per_device_train_batch_size}_{args.max_train_steps}'
     args.laplace_output_dir = f'outputs_laplace/{args.task_name}/{args.model_name_or_path}_{peft_method}_{args.learning_rate}_{args.seed}/'
     
     # custom cache dir
@@ -268,7 +268,7 @@ def main(load_step):
     # Initialize the accelerator once, if its configuration does not change
     accelerator = Accelerator(log_with=args.report_to, project_dir=args.output_dir) if args.with_tracking else Accelerator()
 
-    log_file_path = os.path.join(args.output_dir, 'logfile.log')
+    log_file_path = os.path.join(args.output_dir, 'logfile_la.log')
 
     logging.basicConfig(
         format="%(asctime)s - %(levelname)s - %(name)s - %(message)s",
@@ -284,7 +284,7 @@ def main(load_step):
     logger = logging.getLogger(__name__)
     logger.addHandler(console_handler)
 
-    logger.info(accelerator.state)
+    #logger.info(accelerator.state)
     if accelerator.is_local_main_process:
         datasets.utils.logging.set_verbosity_warning()
         transformers.utils.logging.set_verbosity_info()
@@ -602,7 +602,7 @@ def main(load_step):
             output_dict_str = json.dumps(output_dict)
             f.write(f'{output_dict_str}\n')
     
-    output_path = os.path.join(output_dir, f'gpu_stats.json')
+    output_path = os.path.join(output_dir, f'gpu_stats_la.json')
     with open(output_path, "w+") as f:
         json.dump(gpu_dict, f, indent=4)
 
@@ -611,6 +611,8 @@ def main(load_step):
     all_results = {f"eval_{k}": v for k, v in eval_metric.items()}
 
     all_results_path = os.path.join(output_dir, f"all_results_la_{args.laplace_hessian}_{args.laplace_sub}_{args.laplace_prior}_{args.laplace_predict}_{args.laplace_optim_step}.json")
+
+    logger.info("***** Completed training *****")
 
     # delete the all_results file if it exists
     if os.path.isfile(all_results_path):
