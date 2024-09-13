@@ -5,6 +5,32 @@ import numpy as np
 
 
 def preprocess_function(examples, tokenizer, args, padding):
+        """
+    Preprocesses input examples for various NLP tasks by tokenizing and formatting 
+    them according to the specified task.
+    
+    Args:
+        examples (dict): A dictionary containing input data examples. The structure of 
+                         the dictionary depends on the specific NLP task:
+                         - 'boolq': {'passage': List[str], 'question': List[str], 'label': List[int]}
+                         - 'openbookqa': {'question_stem': List[str], 'choices': List[Dict], 'answerKey': List[str]}
+                         - 'ARC': {'question': List[str], 'choices': List[Dict], 'answerKey': List[str]}
+                         - 'winogrande': {'sentence': List[str], 'option1': List[str], 'option2': List[str], 'answer': List[str]}
+                         - 'cola', 'mnli', 'sst2', 'stsb', 'qnli', 'qqp', 'rte', 'wnli', 'mrpc': Various input structures for GLUE benchmark tasks.
+                         
+        tokenizer (transformers.PreTrainedTokenizer): A tokenizer from the Hugging Face 
+                                                      Transformers library, used to tokenize the input texts.
+        args (Namespace): An object containing arguments from ArgumentParser. Should have 
+                          attributes like 'task_name' (str) and 'max_length' (int).
+        padding (str): Padding strategy for tokenization ('max_length', 'longest', or 'do_not_pad').
+
+    Returns:
+        dict: A dictionary containing tokenized inputs, including:
+              - 'input_ids': List of token ids representing the input texts.
+              - 'attention_mask': List indicating which tokens are actual tokens and which are padding.
+              - 'labels': List of labels corresponding to the input data, processed as per the task's requirements.
+
+        """
         if args.task_name == 'boolq':
             texts = [f"Answer the question with only True or False: {question} Context: {passage}" for passage, question in zip(examples['passage'], examples['question'])]
             result = tokenizer(texts, padding=padding, max_length=args.max_length, truncation=True)
@@ -72,6 +98,10 @@ def convert_choices_to_alpha(example):
         
 
 def download_data(args,cache_dir):
+    """
+    Downloads data from load_dataset using arguments passed through ArgumentParser and returns the raw_datasets and num_labels.
+
+    """
     if args.task_name is not None:
         # Downloading and loading a dataset from the hub.
         if args.task_name in ['wnli', 'rte', 'mrpc', 'cola', 'sst2', 'qnli', 'qqp', 'mnli','stsb']:
