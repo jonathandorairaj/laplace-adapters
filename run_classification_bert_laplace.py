@@ -7,7 +7,7 @@ import math
 import os
 import random
 from pathlib import Path
-
+import numpy as np
 import datasets
 import evaluate
 import torch
@@ -32,6 +32,8 @@ from transformers import (
 )
 from transformers.utils import check_min_version, get_full_repo_name, send_example_telemetry
 from transformers.utils.versions import require_version
+from preprocessing import convert_choices_to_alpha,preprocess_function,download_data
+from memory import save_gpu_stats 
 
 from peft import (
     get_peft_config,
@@ -96,7 +98,7 @@ def parse_args():
     parser.add_argument(
         "--max_length",
         type=int,
-        default=256,
+        default=400,
         help=(
             "The maximum total input sequence length after tokenization. Sequences longer than this will be truncated,"
             " sequences shorter will be padded if `--pad_to_max_length` is passed."
@@ -141,9 +143,10 @@ def parse_args():
     parser.add_argument(
         "--max_train_steps",
         type=int,
-        default=10000,
+        default=None,
         help="Total number of training steps to perform. If provided, overrides num_train_epochs.",
     )
+    parser.add_argument("--peft_method", type=str, default=None)
     parser.add_argument(
         "--gradient_accumulation_steps",
         type=int,
@@ -160,7 +163,7 @@ def parse_args():
     parser.add_argument(
         "--num_warmup_steps", type=int, default=0, help="Number of steps for the warmup in the lr scheduler."
     )
-    parser.add_argument("--output_dir", type=str, default='/user/work/ad20999/outputs', help="Where to store the final model.")
+    parser.add_argument("--output_dir", type=str, default='./outputs', help="Where to store the final model.")
     parser.add_argument("--seed", type=int, default=21, help="A seed for reproducible training.")
     parser.add_argument("--push_to_hub", action="store_true", help="Whether or not to push the model to the Hub.")
     parser.add_argument(
@@ -201,7 +204,7 @@ def parse_args():
         help="Whether or not to enable to load a pretrained model whose head dimensions are different.",
     )
     parser.add_argument("--save", action="store_true", default=False)
-    parser.add_argument("--load_step", type=int, default=0)
+    parser.add_argument("--load_step", type=int, default=999)
     parser.add_argument("--lora_r", type=int, default=8)
     parser.add_argument("--lora_alpha", type=int, default=16)
     parser.add_argument("--lora_dropout", type=float, default=0.1)
@@ -209,8 +212,12 @@ def parse_args():
     parser.add_argument("--laplace_sub", type=str, default='all')
     parser.add_argument("--laplace_prior", type=str, default='homo', help='homo, hetero')
     parser.add_argument("--laplace_optim_step", type=int, default=1000)
-    parser.add_argument("--testing_set", type=str, default='val')
-    parser.add_argument("--laplace_predict", type=str, default='mc_corr_100000', help='probit bridge bridge_norm mc_indep mc_corr')
+    parser.add_argument("--testing_set", type=str, default='train_val')
+    parser.add_argument("--cache_dir", type=str,
+        default="/content/cache/huggingface/metrics/",
+        help="custom cache directory for GLUE datasets"
+    )
+    parser.add_argument("--laplace_predict", type=str, default='mc_corr', help='probit bridge bridge_norm mc_indep mc_corr')
     args = parser.parse_args()
 
     print(args)
@@ -219,8 +226,36 @@ def parse_args():
     if args.testing_set != 'val':
         peft_method += args.testing_set
 
-    args.output_dir += f'/{args.task_name}/{args.model_name_or_path}_{peft_method}_{args.lora_alpha}_{args.lora_dropout}_{args.learning_rate}_{args.seed}'
+    os.makedirs(args.output_dir, exist_ok=True)
+    args_file_path = args.output_dir+f'/{args.task_name}/'
+    args_file_path = os.path.join(args_file_path, 'args.json')
+    args_dict = vars(args)
+    with open(args_file_path, 'w+') as f:
+        json.dump(args_dict, f, indent=4)
 
+    args.output_dir += f'/{args.task_name}/{args.model_name_or_path}_{peft_method}_{args.lora_r}_{args.lora_alpha}_{args.lora_dropout}_{args.learning_rate}_{args.seed}_{args.per_device_train_batch_size}_{args.max_train_steps}'
+    args.laplace_output_dir = f'outputs_laplace/{args.task_name}/{args.model_name_or_path}_{peft_method}_{args.lora_alpha}_{args.lora_dropout}_{args.learning_rate}_{args.seed}_{args.per_device_train_batch_size}_{args.max_train_steps}/'
+
+    # custom cache dir
+    if args.task_name in ['wnli', 'rte', 'mrpc', 'cola', 'sst2', 'qnli', 'qqp', 'mnli']:
+        args.cache_dir += f"/glue/{args.task_name}/outputs_laplace/{args.task_name}/{args.model_name_or_path}_{peft_method}_{args.lora_alpha}_{args.lora_dropout}_{args.learning_rate}_{args.seed}_{args.per_device_train_batch_size}_{args.max_train_steps}/"
+    elif args.task_name in ['cb', 'wic', 'boolq']:
+        args.cache_dir += f'super_glue/{args.task_name}/outputs_laplace/{args.task_name}/{args.model_name_or_path}_{peft_method}_{args.lora_alpha}_{args.lora_dropout}_{args.learning_rate}_{args.seed}/'
+    elif 'ARC' in args.task_name:
+        args.cache_dir += f'accuracy/default/outputs_laplace/{args.task_name}/{args.model_name_or_path}_{peft_method}_{args.lora_alpha}_{args.lora_dropout}_{args.learning_rate}_{args.seed}/'
+    elif 'winogrande' in args.task_name:
+        args.cache_dir += f'accuracy/default/outputs_laplace/{args.task_name}/{args.model_name_or_path}_{peft_method}_{args.lora_alpha}_{args.lora_dropout}_{args.learning_rate}_{args.seed}/'
+    
+    os.makedirs(args.cache_dir, exist_ok=True)
+
+    os.makedirs(args.output_dir, exist_ok=True)
+
+    args.step_list = None
+    #args.steps_file = os.path.join(args.output_dir, 'steps.json')
+    #with open(args.steps_file, 'r') as f:
+        #args.step_list = json.load(f)
+    
+    print(f'Step list is :{args.step_list}')
 
     # Sanity checks
     if args.task_name is None and args.train_file is None and args.validation_file is None:
@@ -240,16 +275,20 @@ def parse_args():
 
 
 def main(load_step):
-    args = parse_args()
+    #args = parse_args()
     args.load_step = load_step
     # Sending telemetry. Tracking the example usage helps us better allocate resources to maintain them. The
     # information sent is the one passed as arguments along with your Python/PyTorch versions.
     send_example_telemetry("run_glue_no_trainer", args)
     
     peft_method = 'lora'
-    laplace_output_dir = f'/user/work/ad20999/outputs_laplace/{args.task_name}/{args.model_name_or_path}_{peft_method}_{args.lora_alpha}_{args.lora_dropout}_{args.learning_rate}_{args.seed}/step_{args.load_step}'
-    
+   
+    laplace_output_dir = args.laplace_output_dir + f'step_{args.load_step}'
     os.makedirs(laplace_output_dir, exist_ok=True)
+
+    subfolder_name = f"step_{args.load_step}"
+    step_dir = os.path.join(args.cache_dir, subfolder_name)
+    os.makedirs(step_dir, exist_ok=True)
 
     # Initialize the accelerator. We will let the accelerator handle device placement for us in this example.
     # If we're using tracking, we also need to initialize it here and it will by default pick up all supported trackers
@@ -258,12 +297,22 @@ def main(load_step):
         Accelerator(log_with=args.report_to, project_dir=args.output_dir) if args.with_tracking else Accelerator()
     )
     # Make one log on every process with the configuration for debugging.
+    log_file_path = os.path.join(args.output_dir, f'logfile_la_{args.laplace_sub}.log')
     logging.basicConfig(
         format="%(asctime)s - %(levelname)s - %(name)s - %(message)s",
         datefmt="%m/%d/%Y %H:%M:%S",
         level=logging.INFO,
+        filename = log_file_path        
     )
-    logger.info(accelerator.state, main_process_only=False)
+    console_handler = logging.StreamHandler()
+    console_handler.setLevel(logging.INFO)
+    formatter = logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")
+    console_handler.setFormatter(formatter)
+
+    logger = logging.getLogger(__name__)
+    logger.addHandler(console_handler)
+    
+    #logger.info(accelerator.state, main_process_only=False)
     if accelerator.is_local_main_process:
         datasets.utils.logging.set_verbosity_warning()
         transformers.utils.logging.set_verbosity_info()
@@ -294,6 +343,10 @@ def main(load_step):
             os.makedirs(args.output_dir, exist_ok=True)
     accelerator.wait_for_everyone()
 
+    raw_datasets,num_labels = download_data(args,args.cache_dir)
+    
+    logger.info('***** Starting script *****')
+
     # Get the datasets: you can either provide your own CSV/JSON training and evaluation files (see below)
     # or specify a GLUE benchmark task (the dataset will be downloaded automatically from the datasets Hub).
 
@@ -306,21 +359,6 @@ def main(load_step):
 
     # In distributed training, the load_dataset function guarantee that only one local process can concurrently
     # download the dataset.
-    if args.task_name in ['wnli', 'rte', 'mrpc', 'cola', 'sst2', 'qnli', 'qqp', 'mnli']:
-        raw_datasets = load_dataset("glue", args.task_name)
-    elif args.task_name in ['cb', 'wic', 'boolq']:
-        raw_datasets = load_dataset("super_glue", args.task_name)
-    else:
-        # Loading the dataset from local csv or json file.
-        data_files = {}
-        if args.train_file is not None:
-            data_files["train"] = args.train_file
-        if args.validation_file is not None:
-            data_files["validation"] = args.validation_file
-        extension = (args.train_file if args.train_file is not None else args.validation_file).split(".")[-1]
-        raw_datasets = load_dataset(extension, data_files=data_files)
-    # See more about loading any type of standard or custom dataset at
-    # https://huggingface.co/docs/datasets/loading_datasets.html.
 
     # Labels
     if args.task_name is not None:
@@ -352,93 +390,49 @@ def main(load_step):
     output_dir = args.output_dir + f'/step_{args.load_step}'
 
     peft_config = PeftConfig.from_pretrained(output_dir)
-    model = AutoModelForSequenceClassification.from_pretrained(peft_config.base_model_name_or_path, ignore_mismatched_sizes=True, num_labels=num_labels)
+    model = AutoModelForSequenceClassification.from_pretrained(peft_config.base_model_name_or_path, 
+                                                               ignore_mismatched_sizes=True, 
+                                                               num_labels=num_labels)
     model = PeftModel.from_pretrained(model, output_dir)
     model.print_trainable_parameters()
 
+    for name, param in model.named_parameters():
+        if param.requires_grad:
+            print(f"{name}: {param.shape}")
+
     if args.laplace_sub == 'all':
         for name, param in model.named_parameters():
+            param.requires_grad = False
             if 'lora' in name:
                 param.requires_grad = True
-    else:    
-        for name, param in model.named_parameters():
-            param.requires_grad = False
-            if 'out_proj' in name:
-                param.requires_grad = True
+    elif args.laplace_sub == 'last_layer':
+      if args.model_name_or_path == 'bert-base-uncased':    
+          for name, param in model.named_parameters():
+                param.requires_grad = False
+                if 'classifier' in name:
+                    param.requires_grad = True
+      else:    
+          for name, param in model.named_parameters():
+                param.requires_grad = False
+                if 'out_proj' in name:
+                    param.requires_grad = True
 
 
     model.print_trainable_parameters()
 
+    for name, param in model.named_parameters():
+        if param.requires_grad:
+            print(f"{name}: {param.shape}")
 
-    # Preprocessing the datasets
-    if args.task_name is not None:
-        sentence1_key, sentence2_key = task_to_keys[args.task_name]
-    else:
-        # Again, we try to have some nice defaults but don't hesitate to tweak to your use case.
-        non_label_column_names = [name for name in raw_datasets["train"].column_names if name != "label"]
-        if "sentence1" in non_label_column_names and "sentence2" in non_label_column_names:
-            sentence1_key, sentence2_key = "sentence1", "sentence2"
-        else:
-            if len(non_label_column_names) >= 2:
-                sentence1_key, sentence2_key = non_label_column_names[:2]
-            else:
-                sentence1_key, sentence2_key = non_label_column_names[0], None
-
-    # Some models have set the order of the labels to use, so let's make sure we do use it.
-    label_to_id = None
-    if (
-        model.config.label2id != PretrainedConfig(num_labels=num_labels).label2id
-        and args.task_name is not None
-        and not is_regression
-    ):
-        # Some have all caps in their config, some don't.
-        label_name_to_id = {k.lower(): v for k, v in model.config.label2id.items()}
-        if sorted(label_name_to_id.keys()) == sorted(label_list):
-            logger.info(
-                f"The configuration of the model provided the following label correspondence: {label_name_to_id}. "
-                "Using it!"
-            )
-            label_to_id = {i: label_name_to_id[label_list[i]] for i in range(num_labels)}
-        else:
-            logger.warning(
-                "Your model seems to have been trained with labels, but they don't match the dataset: ",
-                f"model labels: {sorted(label_name_to_id.keys())}, dataset labels: {sorted(label_list)}."
-                "\nIgnoring the model labels as a result.",
-            )
-    elif args.task_name is None and not is_regression:
-        label_to_id = {v: i for i, v in enumerate(label_list)}
-
-    if label_to_id is not None:
-        model.config.label2id = label_to_id
-        model.config.id2label = {id: label for label, id in config.label2id.items()}
-    elif args.task_name is not None and not is_regression:
-        model.config.label2id = {l: i for i, l in enumerate(label_list)}
-        model.config.id2label = {id: label for label, id in config.label2id.items()}
 
     padding = "max_length" if args.pad_to_max_length else False
 
-    def preprocess_function(examples):
-        # Tokenize the texts
-        texts = (
-            (examples[sentence1_key],) if sentence2_key is None else (examples[sentence1_key], examples[sentence2_key])
-        )
-        result = tokenizer(*texts, padding=padding, max_length=args.max_length, truncation=True)
-
-        if "label" in examples:
-            if label_to_id is not None:
-                # Map labels to IDs (not necessary for GLUE tasks)
-                result["labels"] = [label_to_id[l] for l in examples["label"]]
-            else:
-                # In all cases, rename the column to labels because the model will expect that.
-                result["labels"] = examples["label"]
-        return result
-
     with accelerator.main_process_first():
         processed_datasets = raw_datasets.map(
-            preprocess_function,
-            batched=True,
-            remove_columns=raw_datasets["train"].column_names,
-            desc="Running tokenizer on dataset",
+        lambda examples: preprocess_function(examples,tokenizer,args,padding),
+        batched=True,
+        remove_columns=raw_datasets["train"].column_names,
+        desc="Running tokenizer on dataset",
         )
 
     train_dataset = processed_datasets["train"]
@@ -450,7 +444,7 @@ def main(load_step):
         ds = train_dataset.train_test_split(test_size=0.2, seed=42, shuffle=False)
         train_dataset, val_dataset = ds["train"], ds["test"]
         eval_dataset = processed_dataset
-    elif args.testing_set == 'val':
+    else:
         eval_dataset = processed_dataset
 
     # Log a few random samples from the training set:
@@ -471,9 +465,9 @@ def main(load_step):
     train_dataloader = DataLoader(
         train_dataset, shuffle=True, collate_fn=data_collator, batch_size=args.per_device_train_batch_size
     )
+    eval_dataloader = DataLoader(eval_dataset, shuffle=False, collate_fn=data_collator, batch_size=args.per_device_eval_batch_size)
     if args.testing_set != 'val':
         val_dataloader = DataLoader(val_dataset, collate_fn=data_collator, batch_size=args.per_device_eval_batch_size)
-    eval_dataloader = DataLoader(eval_dataset, collate_fn=data_collator, batch_size=args.per_device_eval_batch_size)
 
     # Optimizer
     # Split weights in two groups, one with weight decay and the other not.
@@ -505,9 +499,14 @@ def main(load_step):
     )
 
     # Prepare everything with our `accelerator`.
-    model, optimizer, eval_dataloader, eval_dataloader, lr_scheduler = accelerator.prepare(
-        model, optimizer, eval_dataloader, eval_dataloader, lr_scheduler
-    )
+    if args.testing_set == 'val':
+        model, optimizer, train_dataloader, eval_dataloader, lr_scheduler = accelerator.prepare(
+            model, optimizer, train_dataloader, eval_dataloader, lr_scheduler
+        )
+    else:
+        model, optimizer, train_dataloader, val_dataloader, eval_dataloader, lr_scheduler = accelerator.prepare(
+            model, optimizer, train_dataloader, val_dataloader, eval_dataloader, lr_scheduler
+        )
 
     model.eval()
 
@@ -517,6 +516,8 @@ def main(load_step):
             metric = evaluate.load("glue", args.task_name, experiment_id=f"{laplace_output_dir}/la_{args.laplace_hessian}_{args.laplace_sub}_{args.laplace_prior}_{args.laplace_optim_step}")
         elif args.task_name in ['cb', 'wic', 'boolq']:
             metric = evaluate.load("super_glue", args.task_name, experiment_id=f"{laplace_output_dir}/la_{args.laplace_hessian}_{args.laplace_sub}_{args.laplace_prior}_{args.laplace_optim_step}")
+        else:
+            metric = evaluate.load("accuracy")
     else:
         metric = evaluate.load("accuracy")
 
@@ -533,24 +534,24 @@ def main(load_step):
     
     if args.laplace_prior == 'hetero':
         la = Laplace(model, 'classification',
-                        subset_of_weights='all',  #args.laplace_sub,
+                        subset_of_weights=args.laplace_sub,  #args.laplace_sub,
                         hessian_structure=args.laplace_hessian)
     elif args.laplace_prior == 'homo':
         la = Laplace(model, 'classification', prior_precision=1.,
-                        subset_of_weights='all',  #args.laplace_sub,
+                        subset_of_weights=args.laplace_sub,  #args.laplace_sub,
                         hessian_structure=args.laplace_hessian)
         
-
+    
     print('----fitting Laplace-----')
     la.fit(train_dataloader)
 
 
     # if args.load_step == 9999:
     if args.laplace_optim_step > 0:
-        if args.testing_set == 'val':
+        if args.testing_set == 'train_val':
             prior_precision = la.optimize_prior_precision(method='marglik', n_steps=args.laplace_optim_step, lr=1e-1)
         elif args.testing_set != 'val':
-            prior_precision = la.optimize_prior_precision(method='CV', val_loader=val_dataloader, log_prior_prec_min=-3, log_prior_prec_max=4, grid_size=100, lr=1e-1, n_steps=args.laplace_optim_step)
+            prior_precision = la.optimize_prior_precision(method='val_gd', val_loader=val_dataloader, n_steps=args.laplace_optim_step, lr=1e-1)
         print(f'prior precision: {prior_precision}')
         torch.save(prior_precision, f'{laplace_output_dir}/prior_precision_{args.laplace_hessian}_{args.laplace_sub}_{args.laplace_prior}_{args.laplace_optim_step}.pt')
 
@@ -564,14 +565,14 @@ def main(load_step):
     output_dicts = []
     f_mu_list = []
     f_var_list = []
-    for step, batch in enumerate(eval_dataloader):
+    for step, batch in tqdm(enumerate(eval_dataloader)):
         with torch.no_grad():
             # logits = la(batch)
             f_mu, f_var = la._glm_predictive_distribution(batch)
             f_mu_list.append(f_mu)
             f_var_list.append(f_var)
 
-        samples = int(args.laplace_predict.split('_')[-1])
+        samples = 100000 # int(args.laplace_predict.split('_')[-1])
         f_mu = f_mu.expand(samples, -1, -1)
         f_var = f_var.expand(samples, -1, -1, -1)
         logits = torch.softmax(f_mu + (torch.linalg.cholesky(f_var).to(f_mu.dtype) @ torch.randn_like(f_mu).unsqueeze(-1).to(f_mu.dtype).to(accelerator.device)).squeeze(-1), dim=-1).mean(0)
@@ -583,7 +584,7 @@ def main(load_step):
             probs = logits[j]  #F.softmax(logits[j], -1)
             label = batch["labels"]
             output_dict = {
-                'index': args.per_device_train_batch_size * step + j,
+                'index': args.per_device_eval_batch_size * step + j,
                 'true': label[j].item(),
                 'pred': logits[j].argmax().item(),
                 'conf': probs.max().item(),
@@ -611,6 +612,8 @@ def main(load_step):
     torch.save(f_var, f'{laplace_output_dir}/f_var_{args.laplace_hessian}_{args.laplace_sub}_{args.laplace_prior}_{args.laplace_optim_step}.pt')
 
 
+    gpu_dict = save_gpu_stats()
+
     output_path = os.path.join(output_dir, f'eval_res_la_{args.laplace_hessian}_{args.laplace_sub}_{args.laplace_prior}_{args.laplace_predict}_{args.laplace_optim_step}.json')
     # output_path = os.path.join(output_dir, f'eval_res_la_{args.laplace_hessian}_{args.laplace_sub}_{args.laplace_prior}.json')
     print(f'writing outputs to \'{output_path}\'')
@@ -623,6 +626,10 @@ def main(load_step):
         for i, output_dict in enumerate(output_dicts):
             output_dict_str = json.dumps(output_dict)
             f.write(f'{output_dict_str}\n')
+    
+    output_path = os.path.join(output_dir, f'gpu_stats_la.json')
+    with open(output_path, "w+") as f:
+        json.dump(gpu_dict, f, indent=4)
 
     eval_metric = metric.compute()
 
@@ -641,11 +648,12 @@ def main(load_step):
 
 
     del model, train_dataloader, output_dicts, metric, la, f_mu, f_var, f_mu_list, f_var_list, eval_dataloader, val_dataloader
-    
+    logger.info('***** Completed Script *****')
     torch.cuda.empty_cache()
 
 
 if __name__ == "__main__":
-    step_list = [0,*list(range(999, 10999, 1000))]
+    args = parse_args()
+    step_list = [0,*list(range(1999, 10999, 2000))]
     for load_step in step_list:
         main(load_step)

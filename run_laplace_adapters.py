@@ -97,7 +97,7 @@ def parse_args():
     parser.add_argument(
         "--model_name_or_path",
         type=str,
-        default='bert-base-uncased',
+        default='meta-llama/Llama-2-7b-chat-hf',
         help="Path to pretrained model or model identifier from huggingface.co/models."
     )
     parser.add_argument(
@@ -205,17 +205,21 @@ def parse_args():
         help="custom cache directory for GLUE datasets"
     )
     #parser.add_argument("--max_step", type=int, required=True, help="Maximum step value for the step list based on number of checkpoints saved.")
-    #parser.add_argument("--step_list",type = str,default = None)
+    parser.add_argument("--step_list",type = str,default = None)
     args = parser.parse_args()
 
     print(args)
+    if args.step_list:
+        args.step_list = [int(step) for step in args.step_list.split(',')]
+    else:
+        args.step_list = []
 
     peft_method = 'adapters'
     if args.testing_set != 'val':
         peft_method += args.testing_set
 
     os.makedirs(args.output_dir, exist_ok=True)
-    args_file_path = os.path.join(args.output_dir, 'args_la.json')
+    args_file_path = os.path.join(args.output_dir, 'args.json')
     args_dict = vars(args)
     with open(args_file_path, 'w+') as f:
       json.dump(args_dict, f, indent=4)
@@ -264,7 +268,7 @@ def main(load_step):
     # Initialize the accelerator once, if its configuration does not change
     accelerator = Accelerator(log_with=args.report_to, project_dir=args.output_dir) if args.with_tracking else Accelerator()
 
-    log_file_path = os.path.join(args.output_dir, 'logfile_la_{args.laplace_sub}.log')
+    log_file_path = os.path.join(args.output_dir, 'logfile_la.log')
 
     logging.basicConfig(
         format="%(asctime)s - %(levelname)s - %(name)s - %(message)s",
@@ -308,7 +312,6 @@ def main(load_step):
     if 'stsb' in args.task_name:
       num_labels = 1
 
-    logger.info('***** Starting script *****')
 
     # Load pretrained model and tokenizer
     #
@@ -630,6 +633,6 @@ if __name__ == "__main__":
     args = parse_args()
 
     #step_list = args.step_list
-    step_list = [0,*list(range(1999, 10999, 2000))]
+    step_list = [*list(range(1999, 10999, 2000))]
     for load_step in step_list:
         main(load_step)
